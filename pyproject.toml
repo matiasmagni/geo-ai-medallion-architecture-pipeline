@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geoai-medallion-pipeline"
+version = "1.0.0"
+description = "GeoAI Medallion Architecture Data Pipeline"
+requires-python = ">=3.9"
+dependencies = [
+    "pyspark==3.5.0",
+    "apache-sedona[spark]==1.5.0",
+    "delta-spark==3.1.0",
+    "boto3>=1.34.0",
+    "psycopg2-binary>=2.9.9",
+    "ollama>=0.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "responses>=0.24.0",
+    "requests-mock>=1.11.0",
+    "moto>=5.0.0",
+    "testcontainers>=4.0.0",
+    "pandas>=2.0.0",
+    "httpx>=0.26.0",
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = [
+    "--strict-markers",
+    "--cov=src",
+    "--cov-report=term-missing",
+    "--cov-report=html:htmlcov",
+    "--cov-fail-under=100",
+    "-v",
+    "--tb=short",
+]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+markers = [
+    "L0: Unit tests - pure functions, no I/O",
+    "L1: Integration tests - mocked external dependencies",
+    "L2: Integration tests - local containers/testcontainers",
+    "L3: End-to-end tests - full pipeline orchestration",
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "requires_docker: marks tests requiring Docker",
+]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+show_missing = true
+skip_covered = false
+
+[tool.coverage.html]
+directory = "htmlcov"

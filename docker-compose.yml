@@ -1,0 +1,79 @@
+# =============================================================================
+# GeoAI Medallion Architecture - Local Databricks Clone
+# =============================================================================
+# Updated to use existing MinIO
+#
+# Usage: docker compose up -d
+# =============================================================================
+
+services:
+  # =========================================================================
+  # SPARK (Local Standalone) - Single container for local development
+  # =========================================================================
+  spark:
+    image: jupyter/pyspark-notebook:spark-3.5.0
+    container_name: geoai-spark
+    environment:
+      SPARK_MODE: master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 9080
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      S3_ENDPOINT: http://insurance-minio:9000
+    ports:
+      - "9077:7077"   # Spark driver
+      - "9080:8080"   # Spark UI
+      - "4040:4040"   # Spark app UI
+    volumes:
+      - spark-workspace:/workspace
+      - ./src:/src
+      - ./notebooks:/home/jovyan/notebooks
+    networks:
+      - geoai-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      - postgres
+
+  # =========================================================================
+  # POSTGRESQL - Reuse existing
+  # =========================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: geoai-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-geometastore}
+      POSTGRES_USER: ${POSTGRES_USER:-geoai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-geoi_secure_pass_2024}
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-geoai}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - geoai-network
+
+  # Skip MLflow/Ollama - can be added later
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  geoai-network:
+    driver: bridge
+    external: true
+    name: insurance_galileo_network
+
+# =============================================================================
+# VOLUMES (Persistent Data)
+# =============================================================================
+volumes:
+  spark-workspace:
+  postgres-data:
