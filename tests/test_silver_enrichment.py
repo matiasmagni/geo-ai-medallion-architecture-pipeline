@@ -135,11 +135,22 @@ class TestOllamaUDFMocked:
 
     def test_ollama_udf_output_format(self, mock_ollama_response):
         """L1-T001: Ollama UDF returns proper JSON format."""
-        pytest.skip("Requires Spark session - tested in integration")
+        # Test the function that parses Ollama responses directly
+        from silver_enrichment import parse_ai_enrichment
+
+        # Test valid JSON parsing
+        result = parse_ai_enrichment('{"severity": 7, "hazard_type": "traffic"}')
+        assert result["ai_severity"] == 7
+        assert result["ai_hazard_type"] == "traffic"
 
     def test_ollama_udf_handles_nulls(self):
         """L1-T002: Ollama UDF handles null descriptions."""
-        pytest.skip("Requires Spark session - tested in integration")
+        from silver_enrichment import parse_ai_enrichment
+
+        # Test null input
+        result = parse_ai_enrichment(None)
+        assert result["ai_severity"] == 5
+        assert result["ai_hazard_type"] == "unknown"
 
 
 # =============================================================================

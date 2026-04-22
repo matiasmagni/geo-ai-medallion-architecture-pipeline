@@ -70,7 +70,7 @@ class Config:
     """
 
     # MinIO/S3 Configuration
-    MINIO_ENDPOINT: str = os.getenv("S3_ENDPOINT", "http://minio:9000")
+    MINIO_ENDPOINT: str = os.getenv("S3_ENDPOINT", "http://localhost:9000")
     MINIO_ACCESS_KEY: str = os.getenv("AWS_ACCESS_KEY_ID", "minioadmin")
     MINIO_SECRET_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin123")
 
@@ -121,11 +121,6 @@ def create_spark_session(config: Config) -> SparkSession:
     builder = (
         SparkSession.builder.appName(config.APP_NAME)
         .master(config.SPARK_MASTER)
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config(
-            "spark.sql.catalog.spark_catalog",
-            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
-        )
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
         .config(
             "spark.kryo.registrator",
@@ -139,7 +134,7 @@ def create_spark_session(config: Config) -> SparkSession:
     try:
         builder = builder.config(
             "spark.jars.packages",
-            "org.apache.sedona:sedona-python-adapter-3.4_2.12:1.4.1,io.delta:delta-spark_2.12:2.4.0",
+            "org.apache.sedona:sedona-python-adapter-3.4_2.12:1.4.1",
         )
     except Exception:
         logger.warning("Could not add Sedona packages - may not be installed")
@@ -679,17 +674,9 @@ def write_silver_table(df: DataFrame, table_name: str, mode: str = "overwrite") 
     mode : str
         Write mode ('overwrite', 'append')
     """
-    path = f"s3a://{Config.SILVER_BUCKET}/{table_name}"
-
-    try:
-        df.write.format("delta").mode(mode).option(
-            "compression", Config.DELTA_COMPRESSION
-        ).save(path)
-        logger.info(f"Wrote {table_name} to {path}")
-    except Exception as e:
-        logger.warning(f"Delta write failed ({e}), trying Parquet")
-        # Fallback to Parquet
-        df.write.format("parquet").mode(mode).save(f"/tmp/geoai/silver/{table_name}")
+    path = f"/tmp/geoai/silver/{table_name}"
+    df.write.format("parquet").mode(mode).save(path)
+    logger.info(f"Wrote {table_name} to {path}")
 
 
 # =============================================================================

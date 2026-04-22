@@ -59,7 +59,7 @@ class Config:
     """
 
     # MinIO/S3 Configuration (s3a:// for better performance)
-    MINIO_ENDPOINT: str = os.getenv("S3_ENDPOINT", "http://minio:9000")
+    MINIO_ENDPOINT: str = os.getenv("S3_ENDPOINT", "http://localhost:9000")
     MINIO_ACCESS_KEY: str = os.getenv("AWS_ACCESS_KEY_ID", "minioadmin")
     MINIO_SECRET_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin123")
 
@@ -142,6 +142,9 @@ def upload_to_bronze(local_path: Path, s3_key: str, format: str = "parquet") -> 
 
     try:
         bucket_name = Config.BRONZE_BUCKET.split("/")[0]
+        # Add the path prefix (e.g., 'bronze/') to s3_key
+        bucket_path = "/".join(Config.BRONZE_BUCKET.split("/")[1:])
+        full_s3_key = f"{bucket_path}/{s3_key}" if bucket_path else s3_key
 
         with open(local_path, "rb") as f:
             content = f.read()
@@ -155,12 +158,12 @@ def upload_to_bronze(local_path: Path, s3_key: str, format: str = "parquet") -> 
 
         client.put_object(
             Bucket=bucket_name,
-            Key=f"{Config.BRONZE_BUCKET}/{s3_key}",
+            Key=full_s3_key,
             Body=content,
             ContentType=content_type,
         )
 
-        logger.info(f"Uploaded to bronze: {s3_key}")
+        logger.info(f"Uploaded to bronze: {full_s3_key}")
         return True
 
     except Exception as e:
@@ -234,7 +237,7 @@ def fetch_us_accidents(output_dir: Optional[Path] = None) -> bool:
         "city": ["New York", "New York", "New York"],
         "state": ["NY", "NY", "NY"],
         "zipcode": ["10001", "10022", "10003"],
-        "source": ["us_accidents"],
+        "source": ["us_accidents", "us_accidents", "us_accidents"],
     }
 
     df = pd.DataFrame(sample_data)
@@ -427,7 +430,7 @@ def fetch_usgs_earthquakes(output_dir: Optional[Path] = None) -> bool:
                     "depth": coords[2],
                     "felt": props.get("felt", 0),
                     "cdi": props.get("cdi"),
-                    "source": ["usgs_earthquakes"],
+                    "source": ["usgs_earthquakes", "usgs_earthquakes"],
                 }
             )
 
@@ -449,7 +452,7 @@ def fetch_usgs_earthquakes(output_dir: Optional[Path] = None) -> bool:
             "depth": [10.5, 8.2],
             "felt": [10, 500],
             "cdi": [3.0, 5.5],
-            "source": ["usgs_earthquakes"],
+            "source": ["usgs_earthquakes", "usgs_earthquakes"],
         }
         df = pd.DataFrame(sample_data)
 
@@ -533,7 +536,11 @@ def fetch_osm_infrastructure(output_dir: Optional[Path] = None) -> bool:
                     "address": element.get("tags", {}).get("addr:street", "")
                     + " "
                     + element.get("tags", {}).get("addr:city", ""),
-                    "source": ["osm_infrastructure"],
+                    "source": [
+                        "osm_infrastructure",
+                        "osm_infrastructure",
+                        "osm_infrastructure",
+                    ],
                 }
             )
 
@@ -548,7 +555,11 @@ def fetch_osm_infrastructure(output_dir: Optional[Path] = None) -> bool:
             "latitude": [40.7128, 40.7589, 40.6895],
             "longitude": [-74.0060, -73.9851, -74.0445],
             "address": ["123 Medical Ave", "456 Fire Blvd", "789 Health St"],
-            "source": ["osm_infrastructure"],
+            "source": [
+                "osm_infrastructure",
+                "osm_infrastructure",
+                "osm_infrastructure",
+            ],
         }
         df = pd.DataFrame(sample_data)
 
@@ -605,7 +616,7 @@ def fetch_us_neighborhoods(output_dir: Optional[Path] = None) -> bool:
             '{"type":"Polygon","coordinates":[[[-73.99,40.74],[-73.97,40.74],[-73.97,40.76],[-73.99,40.76],[-73.99,40.74]]}',
             '{"type":"Polygon","coordinates":[[[-73.97,40.77],[-73.95,40.77],[-73.95,40.79],[-73.97,40.79],[-73.97,40.77]]}',
         ],
-        "source": ["us_neighborhoods"],
+        "source": ["us_neighborhoods", "us_neighborhoods", "us_neighborhoods"],
     }
 
     df = pd.DataFrame(sample_data)
