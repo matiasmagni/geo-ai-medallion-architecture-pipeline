@@ -79,8 +79,6 @@ services:
       - "4318:4318"
       - "8888:8888"
       - "8889:8889"
-    volumes:
-      - ./otel-collector:/etc
     networks:
       - geoai-network
     restart: unless-stopped

@@ -59,14 +59,17 @@ try:
     OTEL_AVAILABLE = True
 except ImportError:
     OTEL_AVAILABLE = False
+    Status = None
+    StatusCode = None
     # Fallback - create dummy classes
     class DummyTracer:
         def start_as_current_span(self, name): return DummySpan()
         def start_span(self, name): return DummySpan()
     class DummySpan:
         def set_attribute(self, k, v): pass
-        def set_status(self, s): pass
+        def set_status(self, ok, msg=''): pass
         def add_event(self, n, a=None): pass
+        def record_exception(self, e): pass
         def __enter__(self): return self
         def __exit__(self, *a): pass
     class DummyMeter:
@@ -128,7 +131,7 @@ class GeoAITracer:
     """
 
     _instance: Optional["GeoAITracer"] = None
-    _tracer: Optional[Tracer] = None
+    _tracer: Optional[Any] = None
     _meter: Optional[Any] = None
 
     def __new__(cls):
@@ -191,7 +194,7 @@ class GeoAITracer:
             self._meter = DummyMeter()
 
     @property
-    def tracer(self) -> Tracer:
+    def tracer(self) -> Any:
         return self._tracer
 
     @property
@@ -203,7 +206,7 @@ class GeoAITracer:
         layer: str,
         operation: str,
         attributes: Optional[Dict[str, Any]] = None,
-    ) -> Span:
+    ) -> Any:
         """
         Start a span for a layer operation.
 
@@ -317,18 +320,22 @@ def traced(layer: str, operation: str, attributes: Optional[Dict[str, Any]] = No
         @wraps(func)
         def wrapper(*args, **kwargs):
             tracer = get_tracer()
-            attributes = attributes or {}
-            attributes["function"] = func.__name__
+            attrs = (attributes or {}).copy()
+            attrs["function"] = func.__name__
 
-            with tracer.start_layer_span(layer, operation, attributes) as span:
+            with tracer.start_layer_span(layer, operation, attrs) as span:
                 start_time = time.time()
                 try:
                     result = func(*args, **kwargs)
-                    span.set_status(Status(StatusCode.OK))
+                    if OTEL_AVAILABLE:
+                        span.set_status(Status(StatusCode.OK))
                     tracer.record_metrics(layer, "records.processed", 1)
                     return result
                 except Exception as e:
-                    span.set_status(Status(StatusCode.ERROR), str(e))
+                    if OTEL_AVAILABLE:
+                        span.set_status(Status(StatusCode.ERROR), str(e))
+                    else:
+                        span.set_status(False, str(e))
                     span.record_exception(e)
                     tracer.record_metrics(layer, "errors", 1)
                     raise
@@ -454,7 +461,7 @@ def export_spans_to_console() -> None:
 def create_span_processor(
     exporter_type: str = "console",
     **kwargs,
-) -> Optional[SpanProcessor]:
+) -> Optional[Any]:
     """
     Create a custom span processor.
 
