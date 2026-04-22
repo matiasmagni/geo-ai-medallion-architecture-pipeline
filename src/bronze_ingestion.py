@@ -39,6 +39,20 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
 
+# OpenTelemetry imports
+try:
+    from telemetry import setup_telemetry, traced_context, flush_telemetry
+    TELEMETRY_AVAILABLE = True
+except ImportError:
+    TELEMETRY_AVAILABLE = False
+    def traced_context(layer, operation):
+        class DummyContext:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+        return DummyContext()
+    def flush_telemetry(): pass
+    def setup_telemetry(**kwargs): pass
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -648,16 +662,29 @@ def run_bronze_ingestion() -> bool:
     bool
         True if all sources succeeded
     """
+    # Setup telemetry
+    if TELEMETRY_AVAILABLE:
+        setup_telemetry(service_name="bronze-ingestion", environment="development")
+
     logger.info("Starting Bronze layer ingestion...")
 
     results = []
 
     # Run all fetchers
-    results.append(("us_accidents", fetch_us_accidents()))
-    results.append(("nyc_311", fetch_nyc_311_requests()))
-    results.append(("usgs_earthquakes", fetch_usgs_earthquakes()))
-    results.append(("osm_infrastructure", fetch_osm_infrastructure()))
-    results.append(("us_neighborhoods", fetch_us_neighborhoods()))
+    with traced_context("bronze", "fetch_us_accidents"):
+        results.append(("us_accidents", fetch_us_accidents()))
+    
+    with traced_context("bronze", "fetch_nyc_311"):
+        results.append(("nyc_311", fetch_nyc_311_requests()))
+    
+    with traced_context("bronze", "fetch_usgs_earthquakes"):
+        results.append(("usgs_earthquakes", fetch_usgs_earthquakes()))
+    
+    with traced_context("bronze", "fetch_osm_infrastructure"):
+        results.append(("osm_infrastructure", fetch_osm_infrastructure()))
+    
+    with traced_context("bronze", "fetch_us_neighborhoods"):
+        results.append(("us_neighborhoods", fetch_us_neighborhoods()))
 
     # Summary
     success_count = sum(1 for _, success in results if success)
@@ -670,6 +697,10 @@ def run_bronze_ingestion() -> bool:
     for source, success in results:
         status = "SUCCESS" if success else "FAILED"
         logger.info(f"  {source}: {status}")
+
+    # Flush telemetry before returning
+    if TELEMETRY_AVAILABLE:
+        flush_telemetry()
 
     return success_count == total_count
 

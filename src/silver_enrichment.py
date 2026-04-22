@@ -50,6 +50,20 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
+# OpenTelemetry imports
+try:
+    from telemetry import setup_telemetry, traced_context, flush_telemetry
+    TELEMETRY_AVAILABLE = True
+except ImportError:
+    TELEMETRY_AVAILABLE = False
+    def traced_context(layer, operation):
+        class DummyContext:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+        return DummyContext()
+    def flush_telemetry(): pass
+    def setup_telemetry(**kwargs): pass
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -699,33 +713,36 @@ def run_silver_enrichment() -> bool:
     bool
         Success status
     """
+    # Setup telemetry
+    if TELEMETRY_AVAILABLE:
+        setup_telemetry(service_name="silver-enrichment", environment="development")
+
     logger.info("Starting Silver layer enrichment...")
 
     try:
         spark = create_spark_session(Config())
         config = Config()
 
-        # Transform all sources
-        transform_us_accidents(spark, config)
-        transform_usgs_earthquakes(spark, config)
-        transform_osm_infrastructure(spark, config)
-        transform_us_neighborhoods(spark, config)
+        # Transform all sources with tracing
+        with traced_context("silver", "transform_us_accidents"):
+            df_accidents = transform_us_accidents(spark, config)
+            write_silver_table(df_accidents, "us_accidents_silver")
 
-        # NYC 311 requires more processing
-        # (skip in this version due to token limits)
-        # transform_nyc_311(spark, config)
+        with traced_context("silver", "transform_usgs_earthquakes"):
+            df_earthquakes = transform_usgs_earthquakes(spark, config)
+            write_silver_table(df_earthquakes, "usgs_earthquakes_silver")
 
-        # Write all
-        write_silver_table(transform_us_accidents(spark, config), "us_accidents_silver")
-        write_silver_table(
-            transform_usgs_earthquakes(spark, config), "usgs_earthquakes_silver"
-        )
-        write_silver_table(
-            transform_osm_infrastructure(spark, config), "osm_infrastructure_silver"
-        )
-        write_silver_table(
-            transform_us_neighborhoods(spark, config), "us_neighborhoods_silver"
-        )
+        with traced_context("silver", "transform_osm_infrastructure"):
+            df_osm = transform_osm_infrastructure(spark, config)
+            write_silver_table(df_osm, "osm_infrastructure_silver")
+
+        with traced_context("silver", "transform_us_neighborhoods"):
+            df_neighborhoods = transform_us_neighborhoods(spark, config)
+            write_silver_table(df_neighborhoods, "us_neighborhoods_silver")
+
+        # Flush telemetry before returning
+        if TELEMETRY_AVAILABLE:
+            flush_telemetry()
 
         logger.info("Silver enrichment complete!")
         return True

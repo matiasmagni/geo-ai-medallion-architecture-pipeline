@@ -47,6 +47,20 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
+# OpenTelemetry imports
+try:
+    from telemetry import setup_telemetry, traced_context, flush_telemetry
+    TELEMETRY_AVAILABLE = True
+except ImportError:
+    TELEMETRY_AVAILABLE = False
+    def traced_context(layer, operation):
+        class DummyContext:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+        return DummyContext()
+    def flush_telemetry(): pass
+    def setup_telemetry(**kwargs): pass
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -579,30 +593,45 @@ def run_gold_dimensional() -> bool:
     -------
     bool
     """
+    # Setup telemetry
+    if TELEMETRY_AVAILABLE:
+        setup_telemetry(service_name="gold-dimensional", environment="development")
+
     logger.info("Starting Gold dimensional modeling...")
 
     try:
         spark = create_spark_session(Config())
 
-        # Create dimensions
-        dim_neighborhoods = create_dim_neighborhoods(spark)
-        dim_infrastructure = create_dim_infrastructure(spark)
+        # Create dimensions with tracing
+        with traced_context("gold", "create_dim_neighborhoods"):
+            dim_neighborhoods = create_dim_neighborhoods(spark)
+            write_gold_table(dim_neighborhoods, "dim_neighborhoods")
 
-        # Create fact
-        fact = create_fact_hazard_events(spark)
+        with traced_context("gold", "create_dim_infrastructure"):
+            dim_infrastructure = create_dim_infrastructure(spark)
+            write_gold_table(dim_infrastructure, "dim_infrastructure")
+
+        # Create fact with tracing
+        with traced_context("gold", "create_fact_hazard_events"):
+            fact = create_fact_hazard_events(spark)
 
         # Spatial joins
-        fact = spatial_join_events_to_neighborhoods(fact, dim_neighborhoods)
-        fact = spatial_join_events_to_nearest_infrastructure(fact, dim_infrastructure)
+        with traced_context("gold", "spatial_join_neighborhoods"):
+            fact = spatial_join_events_to_neighborhoods(fact, dim_neighborhoods)
 
-        # Aggregate
-        metrics = aggregate_hazard_metrics(fact)
+        with traced_context("gold", "spatial_join_infrastructure"):
+            fact = spatial_join_events_to_nearest_infrastructure(fact, dim_infrastructure)
 
-        # Write all
-        write_gold_table(dim_neighborhoods, "dim_neighborhoods")
-        write_gold_table(dim_infrastructure, "dim_infrastructure")
+        # Aggregate and write
+        with traced_context("gold", "aggregate_metrics"):
+            metrics = aggregate_hazard_metrics(fact)
+            write_gold_table(metrics, "agg_hazard_metrics")
+
         write_gold_table(fact, "fact_hazard_events")
-        write_gold_table(metrics, "agg_hazard_metrics")
+
+        # Flush telemetry
+        if TELEMETRY_AVAILABLE:
+            flush_telemetry()
 
         logger.info("Gold dimensional modeling complete!")
         return True
