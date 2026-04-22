@@ -36,46 +36,73 @@ from typing import Optional, Dict, Any
 from functools import wraps
 from contextlib import contextmanager
 
-# OpenTelemetry imports
+# OpenTelemetry imports - import in stages to avoid cascade failures
+OTEL_AVAILABLE = False
+
+# Dummy classes needed for fallback
+class DummyTracer:
+    def start_as_current_span(self, name): return DummySpan()
+    def start_span(self, name): return DummySpan()
+
+class DummySpan:
+    def set_attribute(self, k, v): pass
+    def set_status(self, ok, msg=''): pass
+    def add_event(self, n, a=None): pass
+    def record_exception(self, e): pass
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+
+class DummyMeter:
+    def counter(self, n): return DummyCounter()
+
+class DummyCounter:
+    def add(self, v, a=None): pass
+
+# For Status/StatusCode - try to import, fallback
 try:
+    from opentelemetry.trace import Status, StatusCode
+except ImportError:
+    class Status:
+        def __init__(self, code, message=''):
+            pass
+    class StatusCode:
+        OK = "ok"
+        ERROR = "error"
+        UNSET = "unset"
+        UNAVAILABLE = "unavailable"
+
+# Now try imports
+try:
+    # First base imports that should always work
     from opentelemetry import trace
-    from opentelemetry.trace import Tracer, Span, Status, StatusCode
-    from opentelemetry.sdk.trace import TracerProvider, SpanProcessor
-    from opentelemetry.sdk.trace.export import (
-        BatchSpanProcessor,
-        ConsoleSpanExporter,
-        OTLPSpanExporter,
-    )
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
     from opentelemetry.sdk.resources import Resource, SERVICE_NAME
-    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-    from opentelemetry.exporter.prometheus import PrometheusMetricsExporter
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-    from opentelemetry import metrics
-    from opentelemetry.sdk.metrics import Counter, Histogram
-    from opentelemetry.sdk.resources import Resource
-    from opentelemetry.trace.propagation import set_span_in_context
-    from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+    
+    # Optional imports - may not be installed
+    try:
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    except ImportError:
+        OTLPSpanExporter = None
+        
+    try:
+        from opentelemetry.exporter.prometheus import PrometheusMetricsExporter
+    except ImportError:
+        PrometheusMetricsExporter = None
+        
+    try:
+        from opentelemetry.sdk.trace.export import ConsoleSpanExporter
+    except ImportError:
+        ConsoleSpanExporter = None
+        
     OTEL_AVAILABLE = True
-except ImportError:
-    OTEL_AVAILABLE = False
-    Status = None
-    StatusCode = None
-    # Fallback - create dummy classes
-    class DummyTracer:
-        def start_as_current_span(self, name): return DummySpan()
-        def start_span(self, name): return DummySpan()
-    class DummySpan:
-        def set_attribute(self, k, v): pass
-        def set_status(self, ok, msg=''): pass
-        def add_event(self, n, a=None): pass
-        def record_exception(self, e): pass
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
-    class DummyMeter:
-        def counter(self, n): return DummyCounter()
-    class DummyCounter:
-        def add(self, v, a=None): pass
+except Exception as e:
+    logger.debug(f"OpenTelemetry setup: {e}")
+    OTLPSpanExporter = None
+    PrometheusMetricsExporter = None
+    ConsoleSpanExporter = None
 
 
 logger = logging.getLogger(__name__)

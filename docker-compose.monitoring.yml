@@ -75,10 +75,12 @@ services:
     container_name: geoai-otel-collector
     command: ["--config=/etc/otel-collector-config.yaml"]
     ports:
-      - "4317:4317"
-      - "4318:4318"
-      - "8888:8888"
-      - "8889:8889"
+      - "14317:4317"
+      - "14318:4318"
+      - "18888:8888"
+      - "18889:8889"
+    volumes:
+      - ./otel-collector:/etc/otel-collector
     networks:
       - geoai-network
     restart: unless-stopped
