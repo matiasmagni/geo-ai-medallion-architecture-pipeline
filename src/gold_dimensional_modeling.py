@@ -118,22 +118,11 @@ def create_spark_session(config: Config) -> SparkSession:
     builder = (
         SparkSession.builder.appName(config.APP_NAME)
         .master(config.SPARK_MASTER)
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config(
-            "spark.sql.catalog.spark_catalog",
-            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
-        )
         .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.1.0")
     )
-
-    try:
-        builder = builder.config(
-            "spark.jars.packages",
-            "org.apache.sedona:sedona-python-adapter-3.4_2.12:1.4.1,io.delta:delta-spark_2.12:2.4.0",
-        )
-    except Exception:
-        pass
-
+    
     return builder.getOrCreate()
 
 
@@ -156,7 +145,7 @@ def read_silver_table(spark: SparkSession, table: str) -> DataFrame:
     -------
     DataFrame
     """
-    path = f"s3a://{Config.SILVER_BUCKET}/{table}"
+    path = f"/tmp/geoai/silver/{table}"
 
     try:
         df = spark.read.format("delta").load(path)
@@ -165,7 +154,7 @@ def read_silver_table(spark: SparkSession, table: str) -> DataFrame:
     except Exception as e:
         logger.warning(f"Delta read failed ({e}), trying Parquet")
         try:
-            df = spark.read.format("parquet").load(f"/tmp/geoai/silver/{table}")
+            df = spark.read.format("parquet").load(path)
             logger.info(f"Read Parquet: {table}")
             return df
         except Exception as e2:
@@ -351,12 +340,12 @@ def create_fact_hazard_events(spark: SparkSession) -> DataFrame:
         F.col("ai_hazard_type").alias("hazard_type"),
         F.col("time").alias("event_time"),
         F.col("place").alias("event_address"),  # Use place as address
-        F.lit(None).alias("event_city"),
-        F.lit(None).alias("event_state"),
+        F.lit("").alias("event_city"),
+        F.lit("").alias("event_state"),
     ).withColumn("source_table", F.lit("usgs_earthquakes"))
 
     # Union all sources
-    fact = acc.unionByName(eq, allowMissing=True)
+    fact = acc.unionByName(eq)
 
     # Add surrogate key
     window = Window.orderBy(F.col("event_id"))
@@ -379,9 +368,9 @@ def create_fact_hazard_events(spark: SparkSession) -> DataFrame:
         "event_city",
         "event_state",
         # Foreign keys (to be populated by spatial join)
-        F.lit(None).alias("neighborhood_sk"),
-        F.lit(None).alias("nearest_hospital_sk"),
-        F.lit(None).alias("nearest_hospital_distance"),
+        F.lit(None).cast("int").alias("neighborhood_sk"),
+        F.lit(0).alias("nearest_hospital_sk"),
+        F.lit(0.0).alias("nearest_hospital_distance"),
     )
 
     logger.info(f"FACT_HAZARD_EVENTS: {fact.count()} rows")
@@ -435,7 +424,7 @@ def spatial_join_events_to_neighborhoods(
     except Exception as e:
         logger.warning(f"ST_Within spatial join failed ({e})")
         # Fallback: leave neighborhood_sk as null
-        joined = fact.withColumn("neighborhood_sk", F.lit(None))
+        joined = fact.withColumn("neighborhood_sk", F.lit(None).cast("int"))
 
     logger.info(
         f"Events with neighborhood_sk: {joined.filter('neighborhood_sk IS NOT NULL').count()}"
@@ -494,8 +483,8 @@ def spatial_join_events_to_nearest_infrastructure(
     except Exception as e:
         logger.warning(f"ST_Distance spatial join failed ({e})")
         # Fallback
-        fact = fact.withColumn("nearest_hospital_sk", F.lit(None)).withColumn(
-            "nearest_hospital_distance", F.lit(None)
+        fact = fact.withColumn("nearest_hospital_sk", F.lit(0)).withColumn(
+            "nearest_hospital_distance", F.lit(0.0)
         )
 
     # Count events with nearest hospital
@@ -555,7 +544,7 @@ def write_gold_table(df: DataFrame, table_name: str, mode: str = "overwrite") ->
     table_name : str
     mode : str
     """
-    path = f"s3a://{Config.GOLD_BUCKET}/{table_name}"
+    path = f"/tmp/geoai/gold/{table_name}"
 
     try:
         df.write.format("delta").mode(mode).option(

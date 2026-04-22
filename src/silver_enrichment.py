@@ -136,29 +136,11 @@ def create_spark_session(config: Config) -> SparkSession:
         SparkSession.builder.appName(config.APP_NAME)
         .master(config.SPARK_MASTER)
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-        .config(
-            "spark.kryo.registrator",
-            "org.apache.sedona.core.sedona.SedonaKryoRegistrator",
-        )
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
     )
-
-    # Try to add Sedona packages (may not be in environment)
-    try:
-        builder = builder.config(
-            "spark.jars.packages",
-            "org.apache.sedona:sedona-python-adapter-3.4_2.12:1.4.1",
-        )
-    except Exception:
-        logger.warning("Could not add Sedona packages - may not be installed")
-
+    
     return builder.getOrCreate()
-
-
-# =============================================================================
-# SPATIAL STANDARDIZATION HELPERS
-# =============================================================================
 
 
 def create_geometry_from_latlon(

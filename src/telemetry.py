@@ -73,22 +73,20 @@ except ImportError:
 
 # Now try imports
 try:
-    # First base imports that should always work
-    from opentelemetry import trace
+    from opentelemetry import trace, metrics
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    from opentelemetry.sdk.resources import Resource, SERVICE_NAME
+    from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
     
-    # Optional imports - may not be installed
     try:
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
     except ImportError:
         OTLPSpanExporter = None
         
     try:
-        from opentelemetry.exporter.prometheus import PrometheusMetricsExporter
+        from opentelemetry.exporter.prometheus import PrometheusMetricReader as PrometheusMetricsExporter
     except ImportError:
         PrometheusMetricsExporter = None
         
@@ -103,6 +101,7 @@ except Exception as e:
     OTLPSpanExporter = None
     PrometheusMetricsExporter = None
     ConsoleSpanExporter = None
+    OTEL_AVAILABLE = False
 
 
 logger = logging.getLogger(__name__)
@@ -123,8 +122,9 @@ class TelemetryConfig:
     SERVICE_VERSION: str = os.getenv("OTEL_SERVICE_VERSION", "1.0.0")
 
     # Exporters
+    # Default to geoai-otel-fixed service in Docker network
     OTEL_EXPORTER_OTLP_ENDPOINT: str = os.getenv(
-        "OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"
+        "OTEL_EXPORTER_OTLP_ENDPOINT", "http://geoai-otel-fixed:4317"
     )
     OTEL_EXPORTER_OTLP_INSECURE: bool = os.getenv(
         "OTEL_EXPORTER_OTLP_INSECURE", "true"
@@ -174,7 +174,7 @@ class GeoAITracer:
 
         # Create resource with service info
         resource = Resource.create({
-            SERVICE_NAME: TelemetryConfig.SERVICE_NAME,
+            "service.name": TelemetryConfig.SERVICE_NAME,
             "service.version": TelemetryConfig.SERVICE_VERSION,
             "deployment.environment": TelemetryConfig.ENVIRONMENT,
             "telemetry.sdk.name": "opentelemetry",
@@ -206,16 +206,16 @@ class GeoAITracer:
 
         # Setup metrics
         try:
-            from opentelemetry.sdk.metrics import MeterProvider
-            from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-            from opentelemetry.exporter.prometheus import PrometheusMetricsExporter
+            from opentelemetry.exporter.prometheus import PrometheusMetricReader, start_http_server
 
-            reader = PeriodicExportingMetricReader(
-                PrometheusMetricsExporter(port=TelemetryConfig.OTEL_METRICS_PORT)
-            )
+            reader = PrometheusMetricReader()
             meter_provider = MeterProvider(resource=resource, metric_readers=[reader])
             metrics.set_meter_provider(meter_provider)
             self._meter = metrics.get_meter(TelemetryConfig.SERVICE_NAME)
+            try:
+                start_http_server(TelemetryConfig.OTEL_METRICS_PORT)
+            except OSError:
+                logger.debug(f"Metrics server already running on port {TelemetryConfig.OTEL_METRICS_PORT}")
         except Exception as e:
             logger.warning(f"Failed to setup metrics: {e}")
             self._meter = DummyMeter()
@@ -360,9 +360,9 @@ def traced(layer: str, operation: str, attributes: Optional[Dict[str, Any]] = No
                     return result
                 except Exception as e:
                     if OTEL_AVAILABLE:
-                        span.set_status(Status(StatusCode.ERROR), str(e))
+                        span.set_status(Status(StatusCode.ERROR, str(e)))
                     else:
-                        span.set_status(False, str(e))
+                        span.set_status(Status(StatusCode.ERROR, str(e)))
                     span.record_exception(e)
                     tracer.record_metrics(layer, "errors", 1)
                     raise
