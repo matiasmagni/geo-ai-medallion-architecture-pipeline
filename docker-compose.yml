@@ -73,7 +73,7 @@ services:
       retries: 5
 
   # =========================================================================
-  # OLLAMA - Local LLM
+# OLLAMA - Local LLM
   # =========================================================================
   ollama:
     image: ollama/ollama:latest
@@ -84,13 +84,38 @@ services:
       - ollama-data:/root/.ollama
     networks:
       - geoai-network
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    # Note: GPU passthrough removed - requires NVIDIA runtime
+    # Uncomment below if running with GPU:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # MLFLOW - ML Experiment Tracking
+  # =========================================================================
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    container_name: geoai-mlflow
+    ports:
+      - "5001:5000"
+      - "5000:5000"
+    volumes:
+      - mlflow-data:/mlflow
+    command: ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000"]
+    environment:
+      - MLFLOW_HOST=0.0.0.0
+      - MLFLOW_backend_store_uri=postgresql://postgres:postgres@geoai-postgres:5432/mlflow
+      - MLFLOW_ARTIFACT_ROOT=s3://mlflow-artifacts
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-minioadmin}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-minioadmin123}
+      - MLFLOW_S3_ENDPOINT_URL=http://geoai-minio:9000
+    networks:
+      - geoai-network
 
 networks:
   geoai-network:
@@ -100,3 +125,4 @@ volumes:
   minio-data:
   postgres-data:
   ollama-data:
+  mlflow-data:
