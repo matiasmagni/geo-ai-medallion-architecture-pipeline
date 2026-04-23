@@ -144,6 +144,7 @@ sequenceDiagram
 ```mermaid
 flowchart TB
     subgraph "📥 Ingestion Sources"
+        direction LR
         K1[Kaggle<br/>US Accidents]
         K2[Kaggle<br/>Neighborhoods]
         U[USGS API<br/>Earthquakes]
