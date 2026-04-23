@@ -13,8 +13,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin123
     ports:
-      - "9000:9000"   # API
-      - "9001:9001"   # Console
+      - "9000:9000"
+      - "9001:9001"
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data
@@ -73,7 +73,7 @@ services:
       retries: 5
 
   # =========================================================================
-# OLLAMA - Local LLM
+  # OLLAMA - Local LLM
   # =========================================================================
   ollama:
     image: ollama/ollama:latest
@@ -86,16 +86,8 @@ services:
       - geoai-network
     environment:
       - OLLAMA_HOST=0.0.0.0
-    # Note: GPU passthrough removed - requires NVIDIA runtime
-    # Uncomment below if running with GPU:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
 
+  # =========================================================================
   # MLFLOW - ML Experiment Tracking
   # =========================================================================
   mlflow:
@@ -114,6 +106,25 @@ services:
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-minioadmin}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-minioadmin123}
       - MLFLOW_S3_ENDPOINT_URL=http://geoai-minio:9000
+    networks:
+      - geoai-network
+
+  # =========================================================================
+  # METRICS EXPORTER - Separate Prometheus metrics
+  # =========================================================================
+  metrics-exporter:
+    image: python:3.11-slim
+    container_name: geoai-metrics
+    command:
+      - sh
+      - -c
+      - |
+        pip install prometheus_client
+        python /metrics_exporter.py
+    volumes:
+      - ./metrics_exporter.py:/metrics_exporter.py:ro
+    ports:
+      - "8888:8888"
     networks:
       - geoai-network
 
