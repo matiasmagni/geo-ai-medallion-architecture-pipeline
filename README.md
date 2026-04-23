@@ -32,17 +32,14 @@ A production-ready **Local Databricks Clone** for GeoAI portfolio projects using
 
 ```mermaid
 flowchart TB
-    subgraph Sources["📥 Data Sources"]
-        direction LR
-        S1[("US Accidents<br/>Kaggle CSV")]
-        S2[("US Neighborhoods<br/>Kaggle GeoJSON")]
-        S3[("USGS Earthquakes<br/>Live API")]
-        S4[("OSM Hospitals/Fire<br/>Overpass API")]
-        S5[("NYC 311<br/>Socrata API")]
-    end
+    S1[("US Accidents<br/>Kaggle CSV")] --> S2[("US Neighborhoods<br/>Kaggle GeoJSON")]
+    S2 --> S3[("USGS Earthquakes<br/>Live API")]
+    S3 --> S4[("OSM Hospitals/Fire<br/>Overpass API")]
+    S4 --> S5[("NYC 311<br/>Socrata API")]
+    S5 --> B[("MinIO<br/>s3://geo-lakehouse/bronze")]
     
     subgraph Bronze["🥉 Bronze Layer<br/>Raw Ingestion"]
-        B[("MinIO<br/>s3://geo-lakehouse/bronze")]
+        B
     end
     
     subgraph Silver["🥈 Silver Layer<br/>Spatial Transform"]
@@ -56,8 +53,7 @@ flowchart TB
         GF[("Gold Delta Tables<br/>Fact + Dimensions")]
     end
     
-    Sources --> Bronze
-    Bronze --> ST
+    B --> ST
     ST --> SDelta
     SDelta --> Ollama
     Ollama --> SJ
