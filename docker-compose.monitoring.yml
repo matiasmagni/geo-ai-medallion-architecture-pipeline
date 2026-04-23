@@ -80,7 +80,7 @@ services:
       - "18888:8888"
       - "18889:8889"
     volumes:
-      - ./otel-collector:/etc/otel-collector
+      - ./otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
     networks:
       - geoai-network
     restart: unless-stopped

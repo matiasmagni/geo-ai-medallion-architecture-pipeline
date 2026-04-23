@@ -131,6 +131,9 @@ def generate_gold_metrics():
         count = random.randint(50, 5000)
         status = 'success'
         GOLD_RECORDS.labels(table=table, status=status).inc(count)
+        
+        if random.random() < 0.3:
+            GOLD_ERRORS.labels(table=table, error_type='join').inc(1)
 
 def main():
     logger.info("Starting sample metrics generator on port 8888")

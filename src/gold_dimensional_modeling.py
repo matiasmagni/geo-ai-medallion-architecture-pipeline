@@ -47,6 +47,17 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
+# Prometheus metrics for error tracking
+try:
+    from prometheus_client import Counter
+    _gold_err = Counter('gold_errors', 'Total errors in Gold layer')
+except:
+    _gold_err = None
+
+def inc_gold_errors():
+    if _gold_err:
+        _gold_err.inc()
+
 # OpenTelemetry imports
 try:
     from telemetry import setup_telemetry, traced_context, flush_telemetry
@@ -591,32 +602,68 @@ def run_gold_dimensional() -> bool:
     try:
         spark = create_spark_session(Config())
 
-        # Create dimensions with tracing
-        with traced_context("gold", "create_dim_neighborhoods"):
-            dim_neighborhoods = create_dim_neighborhoods(spark)
-            write_gold_table(dim_neighborhoods, "dim_neighborhoods")
+        # Create dimensions with error tracking
+        try:
+            with traced_context("gold", "create_dim_neighborhoods"):
+                dim_neighborhoods = create_dim_neighborhoods(spark)
+                write_gold_table(dim_neighborhoods, "dim_neighborhoods")
+        except Exception as e:
+            logger.error(f"Error creating dim_neighborhoods: {e}")
+            if GOLD_ERRORS:
+                GOLD_ERRORS.inc()
 
-        with traced_context("gold", "create_dim_infrastructure"):
-            dim_infrastructure = create_dim_infrastructure(spark)
-            write_gold_table(dim_infrastructure, "dim_infrastructure")
+        try:
+            with traced_context("gold", "create_dim_infrastructure"):
+                dim_infrastructure = create_dim_infrastructure(spark)
+                write_gold_table(dim_infrastructure, "dim_infrastructure")
+        except Exception as e:
+            logger.error(f"Error creating dim_infrastructure: {e}")
+            if GOLD_ERRORS:
+                GOLD_ERRORS.inc()
 
-        # Create fact with tracing
-        with traced_context("gold", "create_fact_hazard_events"):
-            fact = create_fact_hazard_events(spark)
+        try:
+            # Create fact with tracing
+            with traced_context("gold", "create_fact_hazard_events"):
+                fact = create_fact_hazard_events(spark)
+        except Exception as e:
+            logger.error(f"Error creating fact_hazard_events: {e}")
+            if GOLD_ERRORS:
+                GOLD_ERRORS.inc()
+            return False
 
-        # Spatial joins
-        with traced_context("gold", "spatial_join_neighborhoods"):
-            fact = spatial_join_events_to_neighborhoods(fact, dim_neighborhoods)
+        try:
+            # Spatial joins
+            with traced_context("gold", "spatial_join_neighborhoods"):
+                fact = spatial_join_events_to_neighborhoods(fact, dim_neighborhoods)
+        except Exception as e:
+            logger.error(f"Error spatial join neighborhoods: {e}")
+            if GOLD_ERRORS:
+                GOLD_ERRORS.inc()
 
-        with traced_context("gold", "spatial_join_infrastructure"):
-            fact = spatial_join_events_to_nearest_infrastructure(fact, dim_infrastructure)
+        try:
+            with traced_context("gold", "spatial_join_infrastructure"):
+                fact = spatial_join_events_to_nearest_infrastructure(fact, dim_infrastructure)
+        except Exception as e:
+            logger.error(f"Error spatial join infrastructure: {e}")
+            if GOLD_ERRORS:
+                GOLD_ERRORS.inc()
 
-        # Aggregate and write
-        with traced_context("gold", "aggregate_metrics"):
-            metrics = aggregate_hazard_metrics(fact)
-            write_gold_table(metrics, "agg_hazard_metrics")
+        try:
+            # Aggregate and write
+            with traced_context("gold", "aggregate_metrics"):
+                metrics = aggregate_hazard_metrics(fact)
+                write_gold_table(metrics, "agg_hazard_metrics")
+        except Exception as e:
+            logger.error(f"Error aggregating metrics: {e}")
+            if GOLD_ERRORS:
+                GOLD_ERRORS.inc()
 
-        write_gold_table(fact, "fact_hazard_events")
+        try:
+            write_gold_table(fact, "fact_hazard_events")
+        except Exception as e:
+            logger.error(f"Error writing fact_hazard_events: {e}")
+            if GOLD_ERRORS:
+                GOLD_ERRORS.inc()
 
         # Flush telemetry
         if TELEMETRY_AVAILABLE:
@@ -627,6 +674,7 @@ def run_gold_dimensional() -> bool:
 
     except Exception as e:
         logger.error(f"Gold modeling failed: {e}")
+        inc_gold_errors()
         return False
 
 
@@ -635,5 +683,14 @@ def run_gold_dimensional() -> bool:
 # =============================================================================
 
 if __name__ == "__main__":
+    # Start Prometheus metrics server (exposes /metrics endpoint)
+    try:
+        from prometheus_client import start_http_server
+        import logging
+        logging.getLogger(__name__).info("Prometheus metrics server started on port 8888")
+        start_http_server(8888)
+    except Exception:
+        pass
+    
     success = run_gold_dimensional()
     sys.exit(0 if success else 1)

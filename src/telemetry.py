@@ -97,13 +97,15 @@ try:
         
     OTEL_AVAILABLE = True
 except Exception as e:
-    logger.debug(f"OpenTelemetry setup: {e}")
+    import logging
+    logging.getLogger(__name__).debug(f"OpenTelemetry setup: {e}")
     OTLPSpanExporter = None
     PrometheusMetricsExporter = None
     ConsoleSpanExporter = None
     OTEL_AVAILABLE = False
 
 
+import logging
 logger = logging.getLogger(__name__)
 
 

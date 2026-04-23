@@ -50,6 +50,17 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
+# Prometheus metrics for error tracking
+try:
+    from prometheus_client import Counter
+    _silver_err = Counter('silver_errors', 'Total errors in Silver layer')
+except:
+    _silver_err = None
+
+def inc_silver_errors():
+    if _silver_err:
+        _silver_err.inc()
+
 # OpenTelemetry imports
 try:
     from telemetry import setup_telemetry, traced_context, flush_telemetry
@@ -705,22 +716,42 @@ def run_silver_enrichment() -> bool:
         spark = create_spark_session(Config())
         config = Config()
 
-        # Transform all sources with tracing
-        with traced_context("silver", "transform_us_accidents"):
-            df_accidents = transform_us_accidents(spark, config)
-            write_silver_table(df_accidents, "us_accidents_silver")
+        # Transform all sources with error tracking
+        try:
+            with traced_context("silver", "transform_us_accidents"):
+                df_accidents = transform_us_accidents(spark, config)
+                write_silver_table(df_accidents, "us_accidents_silver")
+        except Exception as e:
+            logger.error(f"Error transforming us_accidents: {e}")
+            if SILVER_ERRORS:
+                SILVER_ERRORS.inc()
 
-        with traced_context("silver", "transform_usgs_earthquakes"):
-            df_earthquakes = transform_usgs_earthquakes(spark, config)
-            write_silver_table(df_earthquakes, "usgs_earthquakes_silver")
+        try:
+            with traced_context("silver", "transform_usgs_earthquakes"):
+                df_earthquakes = transform_usgs_earthquakes(spark, config)
+                write_silver_table(df_earthquakes, "usgs_earthquakes_silver")
+        except Exception as e:
+            logger.error(f"Error transforming usgs_earthquakes: {e}")
+            if SILVER_ERRORS:
+                SILVER_ERRORS.inc()
 
-        with traced_context("silver", "transform_osm_infrastructure"):
-            df_osm = transform_osm_infrastructure(spark, config)
-            write_silver_table(df_osm, "osm_infrastructure_silver")
+        try:
+            with traced_context("silver", "transform_osm_infrastructure"):
+                df_osm = transform_osm_infrastructure(spark, config)
+                write_silver_table(df_osm, "osm_infrastructure_silver")
+        except Exception as e:
+            logger.error(f"Error transforming osm_infrastructure: {e}")
+            if SILVER_ERRORS:
+                SILVER_ERRORS.inc()
 
-        with traced_context("silver", "transform_us_neighborhoods"):
-            df_neighborhoods = transform_us_neighborhoods(spark, config)
-            write_silver_table(df_neighborhoods, "us_neighborhoods_silver")
+        try:
+            with traced_context("silver", "transform_us_neighborhoods"):
+                df_neighborhoods = transform_us_neighborhoods(spark, config)
+                write_silver_table(df_neighborhoods, "us_neighborhoods_silver")
+        except Exception as e:
+            logger.error(f"Error transforming us_neighborhoods: {e}")
+            if SILVER_ERRORS:
+                SILVER_ERRORS.inc()
 
         # Flush telemetry before returning
         if TELEMETRY_AVAILABLE:
@@ -731,6 +762,7 @@ def run_silver_enrichment() -> bool:
 
     except Exception as e:
         logger.error(f"Silver enrichment failed: {e}")
+        inc_silver_errors()
         return False
 
 
@@ -739,5 +771,13 @@ def run_silver_enrichment() -> bool:
 # =============================================================================
 
 if __name__ == "__main__":
+    # Start Prometheus metrics server (exposes /metrics endpoint)
+    try:
+        from prometheus_client import start_http_server
+        start_http_server(8888)
+        logger.info("Prometheus metrics server started on port 8888")
+    except Exception as e:
+        logger.debug(f"Could not start metrics server: {e}")
+    
     success = run_silver_enrichment()
     sys.exit(0 if success else 1)

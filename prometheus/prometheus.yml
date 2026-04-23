@@ -16,7 +16,7 @@ scrape_configs:
 
   - job_name: 'geoai-pipeline'
     static_configs:
-      - targets: ['host.docker.internal:8888']
+      - targets: ['docker.for.mac.localhost:8888']
     metrics_path: '/metrics'
 
   - job_name: 'spark'
