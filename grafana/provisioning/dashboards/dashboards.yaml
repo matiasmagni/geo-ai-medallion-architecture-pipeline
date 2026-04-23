@@ -1,18 +1,7 @@
-{
-  "apiVersion": 1,
-  "providers": [
-    {
-      "folder": "GeoAI",
-      "name": "GeoAI Dashboards",
-      "orgId": 1,
-      "type": "file",
-      "disableDeletion": false,
-      "updateIntervalSeconds": 10,
-      "allowUiUpdates": true,
-      "options": {
-        "path": "/etc/grafana/provisioning/dashboards",
-        "foldersFromFilesStructure": false
-      }
-    }
-  ]
-}
+apiVersion: 1
+providers:
+  - name: "GeoAI Dashboards"
+    folder: "GeoAI"
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards
