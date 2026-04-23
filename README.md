@@ -31,9 +31,8 @@ A production-ready **Local Databricks Clone** for GeoAI portfolio projects using
 ### High-Level System Architecture
 
 ```mermaid
-flowchart TB
+flowchart LR
     subgraph Sources["📥 Data Sources"]
-        direction LR
         S1[("US Accidents<br/>Kaggle CSV")]
         S2[("US Neighborhoods<br/>Kaggle GeoJSON")]
         S3[("USGS Earthquakes<br/>Live API")]
@@ -142,9 +141,8 @@ sequenceDiagram
 ### Data Source Integration
 
 ```mermaid
-flowchart TB
+flowchart LR
     subgraph "📥 Ingestion Sources"
-        direction LR
         K1[Kaggle<br/>US Accidents]
         K2[Kaggle<br/>Neighborhoods]
         U[USGS API<br/>Earthquakes]
