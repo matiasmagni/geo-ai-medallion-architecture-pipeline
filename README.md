@@ -34,26 +34,22 @@ A production-ready **Local Databricks Clone** for GeoAI portfolio projects using
 flowchart TB
     subgraph Sources["📥 Data Sources"]
         direction LR
-        S1[US Accidents<br/>Kaggle CSV]
-        S2[US Neighborhoods<br/>Kaggle GeoJSON]
-        S3[USGS Earthquakes<br/>Live API]
-        S4[OSM Hospitals/Fire<br/>Overpass API]
-        S5[NYC 311<br/>Socrata API]
+        S1[("US Accidents<br/>Kaggle CSV")] ~~~ S2[("US Neighborhoods<br/>Kaggle GeoJSON")] ~~~ S3[("USGS Earthquakes<br/>Live API")] ~~~ S4[("OSM Hospitals/Fire<br/>Overpass API")] ~~~ S5[("NYC 311<br/>Socrata API")]
     end
     
-    subgraph Bronze["🥉 Bronze Layer<br/>Raw Ingestion"]
-        B[MinIO<br/>s3://geo-lakehouse/bronze]
+    subgraph Bronze["🥉 Bronze Layer: Raw Ingestion"]
+        B[("MinIO<br/>s3://geo-lakehouse/bronze")]
     end
     
-    subgraph Silver["🥈 Silver Layer<br/>Spatial Transform"]
-        ST[Apache Sedona<br/>ST_Point, ST_GeomFromGeoJSON<br/>EPSG:4326]
-        SDelta[Delta Lake<br/>ACID Transactions]
+    subgraph Silver["🥈 Silver Layer: Spatial Transform"]
+        ST[("Apache Sedona<br/>ST_Point, ST_GeomFromGeoJSON<br/>EPSG:4326")]
+        SDelta[("Delta Lake<br/>ACID Transactions")]
     end
     
-    subgraph Gold["🥇 Gold Layer<br/>Star Schema + AI"]
-        Ollama[Ollama<br/>llama3]
-        SJ[Sedona Spatial Joins<br/>ST_Within, ST_Distance]
-        GF[Gold Delta Tables<br/>Fact + Dimensions]
+    subgraph Gold["🥇 Gold Layer: Star Schema + AI"]
+        Ollama[("Ollama<br/>llama3")]
+        SJ[("Sedona Spatial Joins<br/>ST_Within, ST_Distance")]
+        GF[("Gold Delta Tables<br/>Fact + Dimensions")]
     end
     
     Sources --> Bronze
@@ -67,23 +63,20 @@ flowchart TB
 ### Medallion Architecture Layers
 
 ```mermaid
-flowchart LR
-    subgraph BRONZE["🥉 Bronze<br/>Raw Data"]
-        B1[US Accidents CSV]
-        B2[USGS JSON]
-        B3[OSM GeoJSON]
+flowchart TB
+    subgraph BRONZE["🥉 Bronze: Raw Data"]
+        direction LR
+        B1[US Accidents CSV] ~~~ B2[USGS JSON] ~~~ B3[OSM GeoJSON]
     end
     
-    subgraph SILVER["🥈 Silver<br/>Cleaned & Spatial"]
-        S1[Accidents + Geometry]
-        S2[Earthquakes + Geometry]
-        S3[Neighborhoods + Polygons]
+    subgraph SILVER["🥈 Silver: Cleaned & Spatial"]
+        direction LR
+        S1[Accidents + Geometry] ~~~ S2[Earthquakes + Geometry] ~~~ S3[Neighborhoods + Polygons]
     end
     
-    subgraph GOLD["🥇 Gold<br/>Enriched & Joined"]
-        G1[FACT_HAZARD_EVENTS]
-        G2[DIM_NEIGHBORHOODS]
-        G3[DIM_INFRASTRUCTURE]
+    subgraph GOLD["🥇 Gold: Enriched & Joined"]
+        direction LR
+        G1[FACT_HAZARD_EVENTS] ~~~ G2[DIM_NEIGHBORHOODS] ~~~ G3[DIM_INFRASTRUCTURE]
     end
     
     BRONZE -->|"Ingest"| SILVER
