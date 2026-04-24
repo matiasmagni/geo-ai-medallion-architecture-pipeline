@@ -21,12 +21,13 @@ A production-ready **Local Databricks Clone** for GeoAI portfolio projects using
 2. [Tech Stack](#tech-stack)
 3. [NYC Healthcare/Fire Models](#nyc-healthcarefire-models)
 4. [Data Flow](#data-flow)
-5. [Getting Started](#getting-started)
-6. [Pipeline Components](#pipeline-components)
-7. [MLflow Experiments](#mlflow-experiments)
-8. [Monitoring](#monitoring)
-9. [Testing Pyramid](#testing-pyramid)
-10. [Troubleshooting](#troubleshooting)
+5. [3D Visualization & Digital Twin](#3d-visualization--digital-twin)
+6. [Getting Started](#getting-started)
+7. [Pipeline Components](#pipeline-components)
+8. [MLflow Experiments](#mlflow-experiments)
+9. [Monitoring](#monitoring)
+10. [Testing Pyramid](#testing-pyramid)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -198,6 +199,21 @@ sequenceDiagram
 
 ---
 
+## 3D Visualization & Digital Twin
+
+The pipeline includes a production-ready **Cinematic 3D Heatmap Generator** that transforms Gold layer spatial data into a high-fidelity "Digital Twin" of Lower Manhattan.
+
+### Features
+- **Real-world Geometry:** Automated BLOSM (Blender-OSM) integration to import 3D buildings and roads.
+- **Aesthetic Styling:** Dark "Digital Twin" obsidian materials for architectural realism.
+- **Data-Driven Heatmap:** Hazards from `FACT_HAZARD_EVENTS` are mapped as glowing icospheres (Severity 1-10 color gradient).
+- **Infrastructure Beacons:** Hospitals from `DIM_INFRASTRUCTURE` are highlighted with tall blue cyber-beacons.
+- **Cycles Rendering:** Configured for cinematic nighttime atmosphere with volumetric fog and GPU acceleration.
+
+**Output:** `nyc_heatmap_cinematic.blend`
+
+---
+
 ## Getting Started
 
 ### Prerequisites
@@ -234,10 +250,15 @@ spark-submit src/silver_sedona_transform.py
 # 7. Run Gold enrichment
 spark-submit src/gold_schema_and_ai_enrichment.py
 
-# 8. View MLflow models
+# 8. Generate Cinematic 3D Heatmap (Requires Blender 4.0+)
+# Install dependencies into Blender's python first:
+# MacOS Example: /Applications/Blender.app/Contents/Resources/4.0/python/bin/python3.10 -m pip install pandas pyarrow
+blender --background --python scripts/generate_nyc_heatmap.py
+
+# 9. View MLflow models
 # Open http://localhost:5000
 
-# 9. View Grafana dashboards
+# 10. View Grafana dashboards
 # Open http://localhost:3001 (admin/admin)
 ```
 
