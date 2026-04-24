@@ -49,6 +49,8 @@ ENV/
 /tmp/
 *.parquet
 *.csv
+# Keep Grafana dashboards tracked
+!grafana/dashboards/*.json
 *.json
 *.geojson
 data/

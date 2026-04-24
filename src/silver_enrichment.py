@@ -50,6 +50,31 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
+# Prometheus metrics for error tracking
+try:
+    from prometheus_client import Counter
+    _silver_err = Counter('silver_errors', 'Total errors in Silver layer')
+except:
+    _silver_err = None
+
+def inc_silver_errors():
+    if _silver_err:
+        _silver_err.inc()
+
+# OpenTelemetry imports
+try:
+    from telemetry import setup_telemetry, traced_context, flush_telemetry
+    TELEMETRY_AVAILABLE = True
+except ImportError:
+    TELEMETRY_AVAILABLE = False
+    def traced_context(layer, operation):
+        class DummyContext:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+        return DummyContext()
+    def flush_telemetry(): pass
+    def setup_telemetry(**kwargs): pass
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -122,29 +147,11 @@ def create_spark_session(config: Config) -> SparkSession:
         SparkSession.builder.appName(config.APP_NAME)
         .master(config.SPARK_MASTER)
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-        .config(
-            "spark.kryo.registrator",
-            "org.apache.sedona.core.sedona.SedonaKryoRegistrator",
-        )
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
     )
-
-    # Try to add Sedona packages (may not be in environment)
-    try:
-        builder = builder.config(
-            "spark.jars.packages",
-            "org.apache.sedona:sedona-python-adapter-3.4_2.12:1.4.1",
-        )
-    except Exception:
-        logger.warning("Could not add Sedona packages - may not be installed")
-
+    
     return builder.getOrCreate()
-
-
-# =============================================================================
-# SPATIAL STANDARDIZATION HELPERS
-# =============================================================================
 
 
 def create_geometry_from_latlon(
@@ -699,39 +706,63 @@ def run_silver_enrichment() -> bool:
     bool
         Success status
     """
+    # Setup telemetry
+    if TELEMETRY_AVAILABLE:
+        setup_telemetry(service_name="silver-enrichment", environment="development")
+
     logger.info("Starting Silver layer enrichment...")
 
     try:
         spark = create_spark_session(Config())
         config = Config()
 
-        # Transform all sources
-        transform_us_accidents(spark, config)
-        transform_usgs_earthquakes(spark, config)
-        transform_osm_infrastructure(spark, config)
-        transform_us_neighborhoods(spark, config)
+        # Transform all sources with error tracking
+        try:
+            with traced_context("silver", "transform_us_accidents"):
+                df_accidents = transform_us_accidents(spark, config)
+                write_silver_table(df_accidents, "us_accidents_silver")
+        except Exception as e:
+            logger.error(f"Error transforming us_accidents: {e}")
+            if SILVER_ERRORS:
+                SILVER_ERRORS.inc()
 
-        # NYC 311 requires more processing
-        # (skip in this version due to token limits)
-        # transform_nyc_311(spark, config)
+        try:
+            with traced_context("silver", "transform_usgs_earthquakes"):
+                df_earthquakes = transform_usgs_earthquakes(spark, config)
+                write_silver_table(df_earthquakes, "usgs_earthquakes_silver")
+        except Exception as e:
+            logger.error(f"Error transforming usgs_earthquakes: {e}")
+            if SILVER_ERRORS:
+                SILVER_ERRORS.inc()
 
-        # Write all
-        write_silver_table(transform_us_accidents(spark, config), "us_accidents_silver")
-        write_silver_table(
-            transform_usgs_earthquakes(spark, config), "usgs_earthquakes_silver"
-        )
-        write_silver_table(
-            transform_osm_infrastructure(spark, config), "osm_infrastructure_silver"
-        )
-        write_silver_table(
-            transform_us_neighborhoods(spark, config), "us_neighborhoods_silver"
-        )
+        try:
+            with traced_context("silver", "transform_osm_infrastructure"):
+                df_osm = transform_osm_infrastructure(spark, config)
+                write_silver_table(df_osm, "osm_infrastructure_silver")
+        except Exception as e:
+            logger.error(f"Error transforming osm_infrastructure: {e}")
+            if SILVER_ERRORS:
+                SILVER_ERRORS.inc()
+
+        try:
+            with traced_context("silver", "transform_us_neighborhoods"):
+                df_neighborhoods = transform_us_neighborhoods(spark, config)
+                write_silver_table(df_neighborhoods, "us_neighborhoods_silver")
+        except Exception as e:
+            logger.error(f"Error transforming us_neighborhoods: {e}")
+            if SILVER_ERRORS:
+                SILVER_ERRORS.inc()
+
+        # Flush telemetry before returning
+        if TELEMETRY_AVAILABLE:
+            flush_telemetry()
 
         logger.info("Silver enrichment complete!")
         return True
 
     except Exception as e:
         logger.error(f"Silver enrichment failed: {e}")
+        inc_silver_errors()
         return False
 
 
@@ -740,5 +771,13 @@ def run_silver_enrichment() -> bool:
 # =============================================================================
 
 if __name__ == "__main__":
+    # Start Prometheus metrics server (exposes /metrics endpoint)
+    try:
+        from prometheus_client import start_http_server
+        start_http_server(8888)
+        logger.info("Prometheus metrics server started on port 8888")
+    except Exception as e:
+        logger.debug(f"Could not start metrics server: {e}")
+    
     success = run_silver_enrichment()
     sys.exit(0 if success else 1)

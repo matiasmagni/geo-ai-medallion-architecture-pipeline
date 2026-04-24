@@ -1,0 +1,75 @@
+groups:
+  - name: geoai_pipeline_alerts
+    interval: 30s
+    rules:
+      - alert: PipelineDown
+        expr: up{job="geoai-pipeline"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pipeline is down"
+          description: "GeoAI pipeline has been down for more than 2 minutes"
+
+      - alert: HighErrorRate
+        expr: (sum(bronze_errors_total) / sum(bronze_records_processed_total)) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate in Bronze layer"
+          description: "Bronze layer error rate is above 5%"
+
+      - alert: HighSilverErrorRate
+        expr: (sum(silver_errors_total) / sum(silver_records_processed_total)) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate in Silver layer"
+          description: "Silver layer error rate is above 5%"
+
+      - alert: HighGoldErrorRate
+        expr: (sum(gold_errors_total) / sum(gold_records_processed_total)) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate in Gold layer"
+          description: "Gold layer error rate is above 5%"
+
+      - alert: NoDataProcessing
+        expr: rate(bronze_records_processed_total[5m]) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No data processing"
+          description: "No records processed in the last 10 minutes"
+
+      - alert: HighLatency
+        expr: rate(bronze_duration_seconds_sum[5m]) / rate(bronze_duration_seconds_count[5m]) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency in Bronze layer"
+          description: "Bronze layer processing taking longer than 30 seconds"
+
+      - alert: OTelCollectorDown
+        expr: up{job="otel-collector"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OTEL Collector is down"
+          description: "OpenTelemetry collector has been down for more than 2 minutes"
+
+      - alert: DataQualityBelowThreshold
+        expr: 100 - (sum(gold_errors_total) / sum(gold_records_processed_total) * 100) < 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Data quality below threshold"
+          description: "Gold layer data quality has dropped below 90%"

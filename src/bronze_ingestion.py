@@ -39,6 +39,32 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
 
+# Prometheus metrics for error tracking
+try:
+    from prometheus_client import Counter
+    _bronze_err = Counter('bronze_errors', 'Total errors in Bronze layer')
+except:
+    _bronze_err = None
+
+def inc_bronze_errors():
+    if _bronze_err:
+        _bronze_err.inc()
+        print(f"[METRICS] Bronze error incremented! Count: {_bronze_err._value._value}")
+
+# OpenTelemetry imports
+try:
+    from telemetry import setup_telemetry, traced_context, flush_telemetry
+    TELEMETRY_AVAILABLE = True
+except ImportError:
+    TELEMETRY_AVAILABLE = False
+    def traced_context(layer, operation):
+        class DummyContext:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+        return DummyContext()
+    def flush_telemetry(): pass
+    def setup_telemetry(**kwargs): pass
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -648,28 +674,82 @@ def run_bronze_ingestion() -> bool:
     bool
         True if all sources succeeded
     """
+    # Setup telemetry
+    if TELEMETRY_AVAILABLE:
+        setup_telemetry(service_name="bronze-ingestion", environment="development")
+
     logger.info("Starting Bronze layer ingestion...")
 
     results = []
 
-    # Run all fetchers
-    results.append(("us_accidents", fetch_us_accidents()))
-    results.append(("nyc_311", fetch_nyc_311_requests()))
-    results.append(("usgs_earthquakes", fetch_usgs_earthquakes()))
-    results.append(("osm_infrastructure", fetch_osm_infrastructure()))
-    results.append(("us_neighborhoods", fetch_us_neighborhoods()))
+    # Run all fetchers with error tracking
+    try:
+        with traced_context("bronze", "fetch_us_accidents"):
+            results.append(("us_accidents", fetch_us_accidents()))
+    except Exception as e:
+        logger.error(f"Error fetching us_accidents: {e}")
+        inc_bronze_errors()
+        results.append(("us_accidents", False))
+    
+    try:
+        with traced_context("bronze", "fetch_nyc_311"):
+            results.append(("nyc_311", fetch_nyc_311_requests()))
+    except Exception as e:
+        logger.error(f"Error fetching nyc_311: {e}")
+        inc_bronze_errors()
+        results.append(("nyc_311", False))
+    
+    try:
+        with traced_context("bronze", "fetch_usgs_earthquakes"):
+            results.append(("usgs_earthquakes", fetch_usgs_earthquakes()))
+    except Exception as e:
+        logger.error(f"Error fetching usgs_earthquakes: {e}")
+        inc_bronze_errors()
+        results.append(("usgs_earthquakes", False))
+    
+    try:
+        with traced_context("bronze", "fetch_osm_infrastructure"):
+            results.append(("osm_infrastructure", fetch_osm_infrastructure()))
+    except Exception as e:
+        logger.error(f"Error fetching osm_infrastructure: {e}")
+        inc_bronze_errors()
+        results.append(("osm_infrastructure", False))
+    
+    try:
+        with traced_context("bronze", "fetch_us_neighborhoods"):
+            results.append(("us_neighborhoods", fetch_us_neighborhoods()))
+    except Exception as e:
+        logger.error(f"Error fetching us_neighborhoods: {e}")
+        inc_bronze_errors()
+        results.append(("us_neighborhoods", False))
 
     # Summary
     success_count = sum(1 for _, success in results if success)
     total_count = len(results)
-
+    
+    # Count failures and increment error metrics
+    failed_count = total_count - success_count
+    if failed_count > 0:
+        for _ in range(failed_count):
+            inc_bronze_errors()
+    
     logger.info(
         f"Bronze ingestion complete: {success_count}/{total_count} sources successful"
     )
 
+    # Count failures and increment error metrics
+    failed_count = total_count - success_count
+    if failed_count > 0:
+        for _ in range(failed_count):
+            inc_bronze_errors()
+
     for source, success in results:
         status = "SUCCESS" if success else "FAILED"
         logger.info(f"  {source}: {status}")
+
+    # Flush telemetry before returning
+    if TELEMETRY_AVAILABLE:
+        flush_telemetry()
 
     return success_count == total_count
 
@@ -679,5 +759,20 @@ def run_bronze_ingestion() -> bool:
 # =============================================================================
 
 if __name__ == "__main__":
+    # Start Prometheus metrics server (exposes /metrics endpoint)
+    try:
+        from prometheus_client import start_http_server
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        result = sock.connect_ex(('localhost', 8888))
+        sock.close()
+        if result == 0:
+            logger.info("Port 8888 already in use, reusing existing server")
+        else:
+            start_http_server(8888)
+            logger.info("Prometheus metrics server started on port 8888")
+    except Exception as e:
+        logger.debug(f"Could not start metrics server: {e}")
+    
     success = run_bronze_ingestion()
     sys.exit(0 if success else 1)
