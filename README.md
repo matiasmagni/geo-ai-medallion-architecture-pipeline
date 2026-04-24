@@ -206,11 +206,11 @@ The pipeline includes a production-ready **Cinematic 3D Heatmap Generator** that
 ### Features
 - **Real-world Geometry:** Automated BLOSM (Blender-OSM) integration to import 3D buildings and roads.
 - **Aesthetic Styling:** Dark "Digital Twin" obsidian materials for architectural realism.
-- **Data-Driven Heatmap:** Hazards from `FACT_HAZARD_EVENTS` are mapped as glowing icospheres (Severity 1-10 color gradient).
-- **Infrastructure Beacons:** Hospitals from `DIM_INFRASTRUCTURE` are highlighted with tall blue cyber-beacons.
+- **Data-Driven Heatmap:** Hazards and ML predictions are mapped as glowing spheres with color-coded severity.
+- **Sky Legend:** A massive, unmissable 3D billboard floating 500m above the city for instant data interpretation.
 - **Cycles Rendering:** Configured for cinematic nighttime atmosphere with volumetric fog and GPU acceleration.
 
-**Output:** `nyc_heatmap_cinematic.blend`
+**Output:** `examples/nyc_ml_heatmap.blend`
 
 ---
 
@@ -253,7 +253,7 @@ spark-submit src/gold_schema_and_ai_enrichment.py
 # 8. Generate Cinematic 3D Heatmap (Requires Blender 4.0+)
 # Install dependencies into Blender's python first:
 # MacOS Example: /Applications/Blender.app/Contents/Resources/4.0/python/bin/python3.10 -m pip install pandas pyarrow
-blender --background --python scripts/create_nyc_heatmap.py
+blender --background --python scripts/generate_ml_heatmap.py
 
 # 9. View MLflow models
 # Open http://localhost:5000
