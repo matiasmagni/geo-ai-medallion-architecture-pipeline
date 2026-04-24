@@ -128,6 +128,46 @@ services:
     networks:
       - geoai-network
 
+  # =========================================================================
+  # PROMETHEUS - Monitoring
+  # =========================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: geoai-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    networks:
+      - geoai-network
+
+  # =========================================================================
+  # GRAFANA - Visualization
+  # =========================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: geoai-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana-data:/var/lib/grafana
+    networks:
+      - geoai-network
+    depends_on:
+      - prometheus
+
 networks:
   geoai-network:
     driver: bridge
