@@ -3,6 +3,23 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
+# Node / JavaScript
+# -----------------------------------------------------------------------------
+node_modules/
+geo-ai-heatmap/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.lock
+package-lock.json
+yarn.lock
+
+# -----------------------------------------------------------------------------
+# OpenCode
+# -----------------------------------------------------------------------------
+.opencode/
+
+# -----------------------------------------------------------------------------
 # Python
 # -----------------------------------------------------------------------------
 __pycache__/
@@ -39,8 +56,20 @@ ENV/
 # VS Code
 .vscode/
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# Ruff linter
+.ruff_cache/
+
+# Specify (generated)
+.specify/
+
+# Notebooks checkpoint
+.ipynb_checkpoints/
+
+# Workspace / deployment
+workspace/
+
+# OpenCode (generated)
+.git/opencodes
 *.ipynb_checkpoints
 
 # -----------------------------------------------------------------------------
@@ -91,6 +120,8 @@ htmlcov/
 # -----------------------------------------------------------------------------
 .env
 .env.local
+.env.*
+!.env.example
 *.pem
 *.key
 credentials.json
