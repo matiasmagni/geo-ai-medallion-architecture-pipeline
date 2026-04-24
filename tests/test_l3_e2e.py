@@ -196,7 +196,7 @@ class TestMLflowIntegration:
         response = requests.get("http://localhost:5000", timeout=10)
         assert response.status_code in [200, 301, 302], "MLflow not accessible"
 
-def test_mlflow_api_experiments(self):
+    def test_mlflow_api_experiments(self):
         """Test MLflow API is accessible."""
         response = requests.get("http://localhost:5001/api/2.0/mlflow/experiments/list", timeout=10)
         # Accept 200 (success) or 404 (endpoint may have changed in newer versions)
