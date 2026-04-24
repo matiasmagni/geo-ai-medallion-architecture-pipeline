@@ -103,6 +103,53 @@ flowchart TB
 
 ---
 
+## Shift-Left AI Pattern (CRITICAL)
+
+### Why LLM is in Silver, NOT Gold
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  WRONG: Running LLM in Gold layer = DISASTER                       │
+│                                                                     │
+│  Gold Query: SELECT borough, COUNT(*) FROM events WHERE severity>5 │
+│  If Gold calls LLM: 10M rows × 2 seconds/row = 6+ MONTHS          │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### The Correct Pattern:
+
+| Layer | Purpose | LLM Calls | Performance |
+|-------|---------|-----------|-------------|
+| **Bronze** | Raw ingestion | ❌ None | N/A |
+| **Silver** | Transform + **AI Enrichment** | ✅ **HERE ONLY** | ~2-5 sec/record |
+| **Gold** | Star Schema queries | ❌ **NEVER** | ~ms per query |
+
+### Why Silver ONLY:
+
+1. **Enrich Once, Query Forever** - LLM processes each record once in Silver, saves to Delta Lake. Gold queries pre-enriched data.
+
+2. **Performance** - Gold must support fast analytical queries. LLM is slow (2-5 seconds per call).
+
+3. **Cost** - Pay for AI enrichment once. Gold queries are free.
+
+4. **Reusability** - Enriched data cached in Silver Delta tables. Multiple Gold queries reuse same enrichment.
+
+### Example Flow:
+```python
+# Silver layer (ENRICH ONCE)
+for each record in bronze:
+    severity = ollama.analyze(description)  # 2 seconds
+    save_to_delta_lake(enriched_record)
+
+# Gold layer (QUERY FOREVER - NO LLM)
+SELECT borough, AVG(severity) FROM silver_enriched 
+GROUP BY borough  # milliseconds
+```
+
+**Shift-Left = Move expensive AI work LEFT in pipeline so queries are fast.**
+
+---
+
 ## Tech Stack
 
 | Component | Technology | Version | Purpose |
