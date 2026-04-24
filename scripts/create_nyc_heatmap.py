@@ -1,119 +1,100 @@
-#!/usr/bin/env python3
-"""
-NYC 3D GeoAI Heatmap Generator v2.0
------------------------------------
-Uses Blosm to import REAL NYC building geometry and overlays 
-ML model predictions from the GeoAI Medallion Pipeline.
-
-Models visualized:
-- NYC_FireRiskModel (GradientBoosting)
-- NYC_HospitalOverpopulationModel (RandomForest)
-- NYC_EmergencyResponseModel (RandomForest)
-- NYC_HospitalBedDemand (GradientBoosting)
-- NYC_AmbulanceDispatch (RandomForest)
-"""
-
 import bpy
 import math
-import random
 import os
+import pandas as pd
 
-# NYC Coordinates (Times Square / Mid-Manhattan)
-NYC_CENTER_LAT = 40.7580
-NYC_CENTER_LON = -73.9855
+# =============================================================================
+# CONFIGURATION & CONSTANTS
+# =============================================================================
 
-# Model prediction data (Actual metrics from GeoAI Pipeline)
-MODEL_PREDICTIONS = [
-    # Fire Risk Model predictions (Red)
-    (40.7580, -73.9855, 0.86, "fire_risk", 0.9),
-    (40.7484, -73.9857, 0.72, "fire_risk", 0.7),
-    (40.7614, -73.9776, 0.65, "fire_risk", 0.65),
-    (40.7282, -73.7949, 0.45, "fire_risk", 0.45),
-    (40.8448, -73.8648, 0.38, "fire_risk", 0.38),
-    (40.6782, -73.9442, 0.52, "fire_risk", 0.52),
-    (40.5795, -74.1502, 0.28, "fire_risk", 0.28),
-    (40.6501, -73.9496, 0.61, "fire_risk", 0.61),
-    
-    # Hospital Overpopulation (Purple)
-    (40.7580, -73.9855, 1.0, "hospital_overpop", 1.0),
-    (40.7484, -73.9857, 0.85, "hospital_overpop", 0.85),
-    (40.7614, -73.9776, 0.78, "hospital_overpop", 0.78),
-    (40.7282, -73.7949, 0.42, "hospital_overpop", 0.42),
-    (40.8448, -73.8648, 0.55, "hospital_overpop", 0.55),
-    (40.6782, -73.9442, 0.68, "hospital_overpop", 0.68),
-    
-    # Emergency Response (Blue)
-    (40.7580, -73.9855, 2.83, "emergency_response", 0.4),
-    (40.7484, -73.9857, 3.15, "emergency_response", 0.35),
-    (40.7614, -73.9776, 2.56, "emergency_response", 0.45),
-    (40.7282, -73.7949, 8.5, "emergency_response", 0.15),
-    (40.8448, -73.8648, 6.2, "emergency_response", 0.2),
-]
+# Paths to your Gold Layer Parquet files (Relative to CWD)
+HAZARD_DATA_PATH = "./fact_hazard_events.parquet"
+INFRA_DATA_PATH = "./dim_infrastructure.parquet"
 
-MODEL_COLORS = {
-    "fire_risk": (1.0, 0.1, 0.0, 1.0),
-    "hospital_overpop": (0.6, 0.0, 1.0, 1.0),
-    "emergency_response": (0.0, 0.5, 1.0, 1.0),
-    "bed_demand": (1.0, 0.8, 0.0, 1.0),
-    "ambulance_dispatch": (0.0, 1.0, 0.4, 1.0),
+# Lower Manhattan / Financial District Bounding Box
+MANHATTAN_BOUNDS = {
+    "min_lat": 40.7000,
+    "max_lat": 40.7150,
+    "min_lon": -74.0180,
+    "max_lon": -73.9950
 }
 
-def clean_scene():
-    """Clear all objects from the scene."""
+# Coordinate Projection Center (Reference point for XYZ 0,0,0)
+REF_LAT = 40.7075
+REF_LON = -74.0065
+
+# Aesthetic Settings
+BUILDING_COLOR = (0.02, 0.02, 0.03, 1.0)  # Dark Obsidian
+HOSPITAL_COLOR = (0.0, 0.5, 1.0, 1.0)     # Cyber Blue
+FOG_DENSITY = 0.02
+
+# =============================================================================
+# CORE FUNCTIONS
+# =============================================================================
+
+def setup_environment():
+    """Clear scene and configure Cycles."""
+    print("Initializing environment...")
+    # Select and delete all
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete()
-    # Delete unused data
+    
+    # Delete unused data blocks
     for block in bpy.data.meshes: bpy.data.meshes.remove(block)
     for block in bpy.data.materials: bpy.data.materials.remove(block)
-    for block in bpy.data.lights: bpy.data.lights.remove(block)
-    for block in bpy.data.cameras: bpy.data.cameras.remove(block)
 
-def setup_blosm_nyc():
-    """Configure Blosm for NYC import."""
-    print("Configuring Blosm for NYC Realism...")
+    # Set Render Engine to Cycles
+    scene = bpy.context.scene
+    scene.render.engine = 'CYCLES'
     
-    # Access Blosm properties
+    # Try to enable GPU
+    try:
+        prefs = bpy.context.preferences.addons['cycles'].preferences
+        # Use first available device type
+        for dt in ['METAL', 'CUDA', 'OPTIX', 'HIP', 'ONEAPI']:
+            try:
+                prefs.compute_device_type = dt
+                print(f"Enabled GPU: {dt}")
+                scene.cycles.device = 'GPU'
+                break
+            except:
+                continue
+    except:
+        print("Falling back to CPU")
+        scene.cycles.device = 'CPU'
+    
+    # 4K Resolution
+    scene.render.resolution_x = 3840
+    scene.render.resolution_y = 2160
+
+def import_blosm_city():
+    """Automates the BLOSM addon to fetch Fidi geometry."""
+    print("Importing Lower Manhattan geometry via BLOSM...")
+    
+    if not hasattr(bpy.context.scene, "blosm"):
+        print("CRITICAL ERROR: BLOSM addon not found or not enabled!")
+        return
+
     blosm = bpy.context.scene.blosm
     
-    # Set area around Mid-Manhattan
-    # Times Square center with ~1km radius
-    blosm.minLat = 40.7450
-    blosm.maxLat = 40.7700
-    blosm.minLon = -74.0050
-    blosm.maxLon = -73.9700
+    blosm.minLat = MANHATTAN_BOUNDS["min_lat"]
+    blosm.maxLat = MANHATTAN_BOUNDS["max_lat"]
+    blosm.minLon = MANHATTAN_BOUNDS["min_lon"]
+    blosm.maxLon = MANHATTAN_BOUNDS["max_lon"]
     
     blosm.dataType = 'osm'
     blosm.buildings = True
     blosm.water = True
     blosm.highways = True
-    blosm.vegetation = True
-    
-    # Import settings
     blosm.mode = '3Dsimple'
-    if hasattr(blosm, "levelHeight"):
-        blosm.levelHeight = 3.5
     
-    # Execute import
-    print("Importing OpenStreetMap data (this may take a moment)...")
-    try:
-        bpy.ops.blosm.import_data()
-    except Exception as e:
-        print(f"Blosm import failed: {e}. Falling back to sample buildings.")
-        create_sample_nyc_buildings()
-
-def create_digital_twin_materials():
-    """Create tech-style materials for buildings."""
-    # Building Material
-    bldg_mat = bpy.data.materials.new(name="Bldg_DigitalTwin")
-    bldg_mat.use_nodes = True
-    nodes = bldg_mat.node_tree.nodes
-    bsdf = nodes.get("Principled BSDF")
-    if bsdf:
-        bsdf.inputs["Base Color"].default_value = (0.05, 0.05, 0.07, 1.0)
-        bsdf.inputs["Roughness"].default_value = 0.1
-        bsdf.inputs["Metallic"].default_value = 0.8
+    # Set building material to dark glass/grey
+    bldg_mat = create_architectural_material("Bldg_Dark", BUILDING_COLOR, 0.1)
     
-    # Assign to all imported buildings
+    # Execute the import
+    bpy.ops.blosm.import_data()
+    
+    # Assign material to all imported buildings
     for obj in bpy.data.objects:
         if "building" in obj.name.lower():
             if not obj.data.materials:
@@ -121,133 +102,161 @@ def create_digital_twin_materials():
             else:
                 obj.data.materials[0] = bldg_mat
 
-def create_heatmap_layer():
-    """Create the 3D heatmap data points."""
-    print("Creating GeoAI Heatmap Layer...")
+def latlon_to_xyz(lat, lon, alt=0):
+    """Converts WGS84 coordinates to Blender meters relative to REF point."""
+    # Approximate Earth radius in meters
+    R = 6371000 
     
-    # Heatmap container
-    for pred in MODEL_PREDICTIONS:
-        lat, lon, value, model, intensity = pred
-        
-        # Convert lat/lon to Blender coordinates relative to center
-        # Approximated linear projection for small areas
-        x = (lon - NYC_CENTER_LON) * 111320 * math.cos(math.radians(NYC_CENTER_LAT))
-        y = (lat - NYC_CENTER_LAT) * 110574
-        z = intensity * 50 # Height represents intensity
-        
-        # Create a "Data Column"
-        bpy.ops.mesh.primitive_cylinder_add(
-            vertices=16, 
-            radius=15 * intensity, 
-            depth=z, 
-            location=(x, y, z/2)
-        )
-        col = bpy.context.active_object
-        col.name = f"GeoAI_{model}_{int(intensity*100)}"
-        
-        # Create emission material
-        mat = bpy.data.materials.new(name=f"Mat_{model}")
-        mat.use_nodes = True
-        nodes = mat.node_tree.nodes
-        links = mat.node_tree.links
-        
-        # Clean nodes
-        for n in nodes: nodes.remove(n)
-        
-        node_output = nodes.new("ShaderNodeOutputMaterial")
-        node_emission = nodes.new("ShaderNodeEmission")
-        node_emission.inputs["Color"].default_value = MODEL_COLORS[model]
-        node_emission.inputs["Strength"].default_value = 10.0 * intensity
-        
-        links.new(node_emission.outputs["Emission"], node_output.inputs["Surface"])
-        
-        col.data.materials.append(mat)
+    x = R * math.radians(lon - REF_LON) * math.cos(math.radians(REF_LAT))
+    y = R * math.radians(lat - REF_LAT)
+    z = alt
+    return (x, y, z)
 
-def setup_scene():
-    """Setup lights, camera and environment."""
-    # Camera
-    bpy.ops.object.camera_add(location=(1200, -1200, 800))
-    cam = bpy.context.active_object
-    cam.rotation_euler = (math.radians(55), 0, math.radians(45))
-    bpy.context.scene.camera = cam
-    
-    # Sun
-    bpy.ops.object.light_add(type='SUN', location=(100, 100, 500))
-    sun = bpy.context.active_object
-    sun.data.energy = 5.0
-    sun.data.color = (0.8, 0.9, 1.0)
-    
-    # World
-    bpy.context.scene.world.use_nodes = True
-    bg = bpy.context.scene.world.node_tree.nodes.get("Background")
-    if bg:
-        bg.inputs["Color"].default_value = (0.01, 0.01, 0.02, 1.0)
-    
-    # Render Settings
-    scene = bpy.context.scene
-    scene.render.engine = 'BLENDER_EEVEE'
-    if hasattr(scene, "eevee"):
-        scene.eevee.use_bloom = True
-        scene.eevee.use_gtao = True
-        scene.eevee.use_ssr = True
-    
-    # Grid floor
-    bpy.ops.mesh.primitive_plane_add(size=5000, location=(0, 0, -1))
-    grid = bpy.context.active_object
-    grid.name = "DigitalGrid"
-    
-    # Grid Material
-    mat = bpy.data.materials.new(name="GridMat")
+def create_architectural_material(name, color, roughness):
+    """Creates a realistic dark material for buildings."""
+    mat = bpy.data.materials.new(name=name)
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     bsdf = nodes.get("Principled BSDF")
     if bsdf:
-        bsdf.inputs["Base Color"].default_value = (0.02, 0.02, 0.05, 1.0)
-        bsdf.inputs["Roughness"].default_value = 0.1
+        bsdf.inputs['Base Color'].default_value = color
+        bsdf.inputs['Roughness'].default_value = roughness
+        bsdf.inputs['Metallic'].default_value = 0.9
+    return mat
 
-def create_sample_nyc_buildings():
-    """Fallback: Create random buildings if Blosm fails."""
-    print("Creating sample buildings (fallback)...")
-    for i in range(100):
-        x = random.uniform(-1000, 1000)
-        y = random.uniform(-1000, 1000)
-        z = random.uniform(20, 150)
-        bpy.ops.mesh.primitive_cube_add(size=1, location=(x, y, z/2))
-        b = bpy.context.active_object
-        b.scale = (random.uniform(10, 40), random.uniform(10, 40), z)
-        bpy.ops.object.transform_apply(scale=True)
-        b.name = "Building_Sample"
+def create_emission_material(severity):
+    """Procedural material that maps 1-10 severity to color/strength."""
+    mat_name = f"Severity_{severity}"
+    if mat_name in bpy.data.materials:
+        return bpy.data.materials[mat_name]
+        
+    mat = bpy.data.materials.new(name=mat_name)
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    
+    # Remove default BSDF
+    for n in nodes: nodes.remove(n)
+    
+    # Map Severity 1-10: Yellow (1) to Red (10)
+    factor = (severity - 1) / 9.0
+    color = (1.0, 1.0 - factor, 0.0, 1.0)
+    
+    node_out = nodes.new(type='ShaderNodeOutputMaterial')
+    node_em = nodes.new(type='ShaderNodeEmission')
+    
+    node_em.inputs['Color'].default_value = color
+    node_em.inputs['Strength'].default_value = severity * 15.0
+    
+    links.new(node_em.outputs['Emission'], node_out.inputs['Surface'])
+    return mat
+
+def generate_heatmap_points():
+    """Iterates through parquet and spawns 3D markers."""
+    print("Generating 3D Heatmap from Gold Layer...")
+    
+    if not os.path.exists(HAZARD_DATA_PATH):
+        print(f"ERROR: {HAZARD_DATA_PATH} not found!")
+        return
+
+    df = pd.read_parquet(HAZARD_DATA_PATH)
+    
+    # Filter data to our bounding box
+    df = df[
+        (df['latitude'] >= MANHATTAN_BOUNDS["min_lat"]) & 
+        (df['latitude'] <= MANHATTAN_BOUNDS["max_lat"]) &
+        (df['longitude'] >= MANHATTAN_BOUNDS["min_lon"]) &
+        (df['longitude'] <= MANHATTAN_BOUNDS["max_lon"])
+    ]
+
+    for index, row in df.iterrows():
+        coords = latlon_to_xyz(row['latitude'], row['longitude'])
+        
+        # Instantiate an Icosphere
+        bpy.ops.mesh.primitive_ico_sphere_add(
+            radius=2.0, 
+            subdivisions=2, 
+            location=coords
+        )
+        point = bpy.context.active_object
+        point.name = f"Hazard_{index}"
+        
+        # Assign procedural material
+        point.data.materials.append(create_emission_material(row['final_severity']))
+
+def generate_infrastructure_beacons():
+    """Creates tall blue beacons for hospitals."""
+    print("Generating infrastructure beacons...")
+    if not os.path.exists(INFRA_DATA_PATH):
+        print(f"ERROR: {INFRA_DATA_PATH} not found!")
+        return
+
+    df = pd.read_parquet(INFRA_DATA_PATH)
+    
+    # Hospital Beacon Material
+    mat = create_emission_material(10)
+    # Customize color to blue
+    mat.node_tree.nodes["Emission"].inputs['Color'].default_value = HOSPITAL_COLOR
+    
+    for index, row in df.iterrows():
+        if row['facility_type'] == 'hospital':
+            coords = latlon_to_xyz(row['facility_lat'], row['facility_lon'], alt=100)
+            
+            bpy.ops.mesh.primitive_cylinder_add(
+                radius=1.0, 
+                depth=200, 
+                location=coords
+            )
+            beacon = bpy.context.active_object
+            beacon.name = f"Hospital_{index}"
+            beacon.data.materials.append(mat)
+
+def setup_cinematic_camera():
+    """Positions camera for a dramatic overlook."""
+    print("Setting up camera and volumetrics...")
+    
+    # Add Camera
+    bpy.ops.object.camera_add(location=(1200, -1200, 800))
+    cam = bpy.context.active_object
+    cam.data.lens = 50
+    cam.rotation_euler = (math.radians(60), 0, math.radians(45))
+    bpy.context.scene.camera = cam
+    
+    # World Volumetrics
+    world = bpy.context.scene.world
+    world.use_nodes = True
+    nodes = world.node_tree.nodes
+    links = world.node_tree.links
+    
+    # Clear world nodes
+    for n in nodes: nodes.remove(n)
+    
+    node_out = nodes.new(type='ShaderNodeOutputWorld')
+    node_vol = nodes.new(type='ShaderNodeVolumePrincipled')
+    node_vol.inputs['Density'].default_value = FOG_DENSITY
+    node_vol.inputs['Emission Strength'].default_value = 0.005
+    
+    links.new(node_vol.outputs['Volume'], node_out.inputs['Volume'])
 
 def run_main():
-    print("--- NYC REALISM HEATMAP GENERATOR ---")
-    clean_scene()
-    
-    # 1. Import real NYC geometry
-    setup_blosm_nyc()
-    
-    # 2. Style buildings
-    create_digital_twin_materials()
-    
-    # 3. Add GeoAI data layer
-    create_heatmap_layer()
-    
-    # 4. Polish scene
-    setup_scene()
-    
-    # 5. Render
-    output_img = "/tmp/nyc_heatmap_realistic.png"
-    bpy.context.scene.render.filepath = output_img
-    bpy.context.scene.render.resolution_x = 1920
-    bpy.context.scene.render.resolution_y = 1080
-    
-    print(f"Rendering realistic heatmap to {output_img}...")
-    bpy.ops.render.render(write_still=True)
-    
-    # Save blend file
-    blend_path = "/Users/matias.magni/Documents/dev/mine/geo-ai-medallion-architecture-pipeline/nyc_heatmap.blend"
-    bpy.ops.wm.save_as_mainfile(filepath=blend_path)
-    
-    print(f"SUCCESS! Realistic NYC Heatmap saved to {blend_path}")
+    try:
+        setup_environment()
+        import_blosm_city()
+        generate_heatmap_points()
+        generate_infrastructure_beacons()
+        setup_cinematic_camera()
+        
+        # Save blend file
+        blend_path = "/Users/matias.magni/Documents/dev/mine/geo-ai-medallion-architecture-pipeline/nyc_heatmap_cinematic.blend"
+        bpy.ops.wm.save_as_mainfile(filepath=blend_path)
+        
+        print("\n" + "="*40)
+        print(f"SCENE GENERATION COMPLETE: {blend_path}")
+        print("Ready for 4K Cycles Render.")
+        print("="*40)
+        
+    except Exception as e:
+        print(f"CRITICAL ERROR: {str(e)}")
 
 if __name__ == "__main__":
     run_main()

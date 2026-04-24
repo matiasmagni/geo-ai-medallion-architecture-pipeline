@@ -253,7 +253,7 @@ spark-submit src/gold_schema_and_ai_enrichment.py
 # 8. Generate Cinematic 3D Heatmap (Requires Blender 4.0+)
 # Install dependencies into Blender's python first:
 # MacOS Example: /Applications/Blender.app/Contents/Resources/4.0/python/bin/python3.10 -m pip install pandas pyarrow
-blender --background --python scripts/generate_nyc_heatmap.py
+blender --background --python scripts/create_nyc_heatmap.py
 
 # 9. View MLflow models
 # Open http://localhost:5000
