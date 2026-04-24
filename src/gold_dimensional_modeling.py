@@ -126,15 +126,24 @@ def create_spark_session(config: Config) -> SparkSession:
     -------
     SparkSession
     """
+    from sedona.spark import SedonaContext
+    
     builder = (
         SparkSession.builder.appName(config.APP_NAME)
         .master(config.SPARK_MASTER)
+        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+        .config("spark.kryo.registrator", "org.apache.sedona.viz.core.SedonaVizKryoRegistrator")
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.1.0")
     )
     
-    return builder.getOrCreate()
+    spark = builder.getOrCreate()
+    
+    # Initialize Sedona
+    spark = SedonaContext.create(spark)
+    
+    return spark
 
 
 # =============================================================================

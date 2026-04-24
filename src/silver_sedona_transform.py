@@ -178,21 +178,25 @@ def create_geometry_from_latlon(
 
     logger.info(f"Creating geometry from {lat_col}, {lon_col}")
 
-    # Skip spatial transformations if Sedona is not available
-    # Just keep lat/lon as is
-    df = df.withColumn("latitude", F.col(lat_col).cast("double")).withColumn(
-        "longitude", F.col(lon_col).cast("double")
+    # Create geometry using Sedona ST_Point
+    # Note: ST_Point(lon, lat)
+    df = df.withColumn(
+        geometry_col,
+        F.expr(f"ST_Point(cast({lon_col} as double), cast({lat_col} as double))"),
     )
+
+    # Set CRS to WGS84
+    df = df.withColumn(geometry_col, F.expr(f"ST_SetSRID({geometry_col}, 4326)"))
 
     # Data quality: Filter out invalid coordinates
     if drop_nulls:
-        df = df.filter(F.col("latitude").isNotNull())
-        df = df.filter(F.col("longitude").isNotNull())
+        df = df.filter(F.col(geometry_col).isNotNull())
+        # Also filter by coordinate bounds for WGS84
         df = df.filter(
-            (F.col("latitude") >= -90)
-            & (F.col("latitude") <= 90)
-            & (F.col("longitude") >= -180)
-            & (F.col("longitude") <= 180)
+            (F.col(lat_col) >= -90)
+            & (F.col(lat_col) <= 90)
+            & (F.col(lon_col) >= -180)
+            & (F.col(lon_col) <= 180)
         )
 
     return df
@@ -390,13 +394,11 @@ def transform_neighborhoods(
 
     df = df.withColumn("processing_timestamp", F.current_timestamp())
 
-    # Return with lat/lon instead of geometry
     return df.select(
         "source",
         "source_id",
         "neighborhood_name",
-        "latitude",
-        "longitude",
+        "geometry",
         "processing_timestamp",
     )
 
@@ -434,8 +436,7 @@ def transform_usgs_earthquakes(
         "event_timestamp",
         "description",
         "severity",
-        "latitude",
-        "longitude",
+        "geometry",
         "processing_timestamp",
     )
 
@@ -473,8 +474,7 @@ def transform_osm_infrastructure(
         "facility_type",
         "facility_name",
         "operator",
-        "latitude",
-        "longitude",
+        "geometry",
         "processing_timestamp",
     )
 
@@ -514,8 +514,7 @@ def transform_nyc_311(spark: "SparkSession", config: Config) -> Optional["DataFr
         "event_timestamp",
         "description",
         "severity",
-        "latitude",
-        "longitude",
+        "geometry",
         "processing_timestamp",
     )
 
@@ -533,7 +532,7 @@ def write_silver_table(
     mode: str = "overwrite",
 ) -> None:
     """
-    Write DataFrame to Silver layer as Parquet.
+    Write DataFrame to Silver layer as Delta Table.
 
     Parameters:
         spark: SparkSession
@@ -548,9 +547,9 @@ def write_silver_table(
 
     os.makedirs(config.LOCAL_SILVER_PATH, exist_ok=True)
 
-    logger.info(f"Writing Silver Parquet: {output_path}")
+    logger.info(f"Writing Silver Delta Table: {output_path}")
 
-    df.write.format("parquet").mode(mode).option("compression", "snappy").save(
+    df.write.format("delta").mode(mode).option("compression", "snappy").save(
         output_path
     )
 

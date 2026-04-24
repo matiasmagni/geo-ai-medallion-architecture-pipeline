@@ -143,15 +143,25 @@ def create_spark_session(config: Config) -> SparkSession:
     SparkSession
         Configured Spark session
     """
+    from sedona.spark import SedonaContext
+    
     builder = (
         SparkSession.builder.appName(config.APP_NAME)
         .master(config.SPARK_MASTER)
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+        .config("spark.kryo.registrator", "org.apache.sedona.viz.core.SedonaVizKryoRegistrator")
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
     )
     
-    return builder.getOrCreate()
+    spark = builder.getOrCreate()
+    
+    # Initialize Sedona
+    spark = SedonaContext.create(spark)
+    
+    return spark
 
 
 def create_geometry_from_latlon(

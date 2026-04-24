@@ -73,15 +73,22 @@ class Config:
 
 
 def create_spark_session(config: Config):
-    """Create Spark session (no Sedona plugin)."""
+    """Create Spark session with Sedona and Delta plugin."""
     from pyspark.sql import SparkSession
     from pyspark import SparkConf
+    from sedona.spark import SedonaContext
 
-    logger.info("Creating Spark session for Gold layer...")
+    logger.info("Creating Spark session for Gold layer with Sedona...")
 
     conf = SparkConf()
     conf.setAppName(config.APP_NAME)
     conf.setMaster(config.SPARK_MASTER)
+
+    # Sedona Configuration
+    conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+    conf.set("spark.kryo.registrator", "org.apache.sedona.viz.core.SedonaVizKryoRegistrator")
+    conf.set("spark.sql.extensions", "org.apache.sedona.viz.sql.SedonaVizExtensions,org.apache.sedona.sql.SedonaSqlExtensions,io.delta.sql.DeltaSparkSessionExtension")
+    conf.set("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
 
     # MinIO
     conf.set("spark.hadoop.fs.s3a.endpoint", config.MINIO_ENDPOINT)
@@ -95,6 +102,9 @@ def create_spark_session(config: Config):
     conf.set("spark.executor.memory", "4g")
 
     spark = SparkSession.builder.config(conf=conf).getOrCreate()
+    
+    # Initialize Sedona
+    spark = SedonaContext.create(spark)
 
     spark.sparkContext.setLogLevel("WARN")
     return spark
@@ -204,10 +214,13 @@ def parse_ai_enrichment(json_str: str) -> Dict[str, Any]:
 def read_silver_table(
     spark: "SparkSession", config: Config, table_name: str
 ) -> "DataFrame":
-    """Read Parquet from Silver layer (local path)."""
+    """Read Delta from Silver layer (local path)."""
     path = f"{config.LOCAL_SILVER_PATH}/{table_name}"
     logger.info(f"Reading Silver table: {path}")
-    return spark.read.parquet(path)
+    try:
+        return spark.read.format("delta").load(path)
+    except:
+        return spark.read.parquet(path)
 
 
 def read_all_sources(spark: "SparkSession", config: Config) -> Dict[str, "DataFrame"]:
@@ -215,7 +228,7 @@ def read_all_sources(spark: "SparkSession", config: Config) -> Dict[str, "DataFr
     sources = {}
 
     # Only try tables that exist
-    tables = ["usgs_earthquakes"]  # Only this one exists
+    tables = ["us_accidents", "usgs_earthquakes", "osm_infrastructure", "nyc_311_requests", "neighborhoods"]
 
     for table in tables:
         try:
@@ -255,7 +268,7 @@ def create_fact_hazard_events(
 
     # Process each source
     for source_name, df in sources.items():
-        if df is None:
+        if df is None or source_name in ["neighborhoods", "osm_infrastructure"]:
             continue
 
         # Ensure required columns exist
@@ -269,18 +282,25 @@ def create_fact_hazard_events(
         if "severity" not in df.columns:
             df = df.withColumn("severity", F.lit(5))
 
-        # Rename columns for unified schema
-        # Note: Using lat/lon instead of geometry (Sedona fallback)
-        df = df.select(
+        # Ensure geometry column exists, if not create from lat/lon
+        if "geometry" not in df.columns and "latitude" in df.columns and "longitude" in df.columns:
+            df = df.withColumn("geometry", F.expr("ST_Point(cast(longitude as double), cast(latitude as double))"))
+            df = df.withColumn("geometry", F.expr("ST_SetSRID(geometry, 4326)"))
+
+        # Select columns for unified schema
+        cols = [
             F.col("source_system"),
             F.col("source_id").alias("event_id"),
             F.col("event_timestamp").alias("event_time"),
             F.col("description"),
             F.col("severity"),
-            F.col("latitude"),
-            F.col("longitude"),
+            F.col("geometry"),
             F.col("processing_timestamp"),
-        )
+        ]
+        
+        # Only select columns that exist
+        final_cols = [c for c in cols if c._jc.toString().split(" AS ")[0].split(".")[-1].strip("`") in df.columns or "ST_Point" in c._jc.toString()]
+        df = df.select(*cols)
 
         all_events.append(df)
 
@@ -326,29 +346,33 @@ def ai_enrich_fact_table(
 
     # Apply to descriptions
     # Note: Filter to non-null descriptions
-    df_with_ai = fact_df.filter(F.col("description").isNotNull())
-    df_without_ai = fact_df.filter(F.col("description").isNull())
+    df_with_ai = fact_df.filter(F.col("description").isNotNull() & (F.col("description") != ""))
+    df_without_ai = fact_df.filter(F.col("description").isNull() | (F.col("description") == ""))
 
-    # Apply AI enrichment
-    df_enriched = df_with_ai.withColumn(
-        "ai_enrichment_json", ollama_udf(F.col("description"))
-    )
+    if df_with_ai.count() > 0:
+        # Apply AI enrichment
+        df_enriched = df_with_ai.withColumn(
+            "ai_enrichment_json", ollama_udf(F.col("description"))
+        )
 
-    # Parse JSON into columns
-    # Note: This uses from_json schema
-    json_schema = "severity INT, hazard_type STRING"
-    df_enriched = df_enriched.withColumn(
-        "parsed_enrichment", F.from_json(F.col("ai_enrichment_json"), json_schema)
-    )
+        # Parse JSON into columns
+        json_schema = "severity INT, hazard_type STRING"
+        df_enriched = df_enriched.withColumn(
+            "parsed_enrichment", F.from_json(F.col("ai_enrichment_json"), json_schema)
+        )
 
-    df_enriched = df_enriched.select(
-        "*",
-        F.col("parsed_enrichment.severity").alias("ai_severity"),
-        F.col("parsed_enrichment.hazard_type").alias("ai_hazard_type"),
-    )
-
-    # Handle rows without descriptions (use default)
-    df_final = df_enriched.unionByName(df_without_ai, allowMissingColumns=True)
+        df_enriched = df_enriched.select(
+            "*",
+            F.col("parsed_enrichment.severity").alias("ai_severity"),
+            F.col("parsed_enrichment.hazard_type").alias("ai_hazard_type"),
+        )
+        
+        # Handle rows without descriptions (use default)
+        df_final = df_enriched.unionByName(df_without_ai, allowMissingColumns=True)
+    else:
+        df_final = df_without_ai
+        df_final = df_final.withColumn("ai_severity", F.lit(None).cast("int"))
+        df_final = df_final.withColumn("ai_hazard_type", F.lit(None).cast("string"))
 
     # Recalculate severity: AI takes priority
     df_final = df_final.withColumn(
@@ -382,7 +406,12 @@ def create_dim_neighborhoods(
 
         # Add surrogate key
         df = df.withColumn("neighborhood_id", F.expr("uuid()"))
-        df = df.withColumn("neighborhood_name", F.col("name"))
+        
+        name_col = next((c for c in df.columns if "name" in c.lower()), None)
+        if name_col:
+            df = df.withColumn("neighborhood_name", F.col(name_col))
+        else:
+            df = df.withColumn("neighborhood_name", F.lit("Unknown"))
 
         # Select key columns
         df = df.select(
@@ -450,16 +479,26 @@ def spatial_join_events_to_neighborhoods(
     fact_df: "DataFrame", dim_neighborhoods: "DataFrame"
 ) -> "DataFrame":
     """
-    Placeholder for spatial join - add neighborhood_id (null).
-    Sedona not available, would need full implementation with lat/lon.
+    Perform spatial join to find which neighborhood each event is in.
+    Uses Sedona ST_Within.
     """
     from pyspark.sql import functions as F
 
-    logger.info("Spatial join to neighborhoods (placeholder - Sedona not available)...")
+    logger.info("Spatial join to neighborhoods using ST_Within...")
 
-    # Add placeholder columns
-    result = fact_df.withColumn("neighborhood_id", F.lit(None))
-    result = result.withColumn("neighborhood_name", F.lit(None))
+    # Join events to neighborhoods
+    joined_df = fact_df.alias("events").join(
+        dim_neighborhoods.alias("nbh"),
+        F.expr("ST_Within(events.geometry, nbh.geometry)"),
+        "left"
+    )
+
+    # Select original columns plus neighborhood attributes
+    result = joined_df.select(
+        "events.*",
+        F.col("nbh.neighborhood_id"),
+        F.col("nbh.neighborhood_name")
+    )
 
     return result
 
@@ -469,36 +508,38 @@ def spatial_join_events_to_nearest_infrastructure(
 ) -> "DataFrame":
     """
     Use ST_Distance to calculate distance to nearest infrastructure.
-
-    For each event, find the nearest hospital/fire station.
     """
     from pyspark.sql import functions as F
+    from pyspark.sql.window import Window
 
     logger.info("Performing ST_Distance nearest infrastructure join...")
 
-    # This is a complex spatial join - simplified version
-    # In production, would use Sedona's KNN join or broadcast for small datasets
+    # Calculate distance to all infrastructure (Cross Join - expensive!)
+    # For a more efficient approach, use Sedona's spatial partitioning if available
+    
+    # Let's do it for hospitals first
+    hospitals = dim_infrastructure.filter(F.col("facility_category") == "hospital")
+    
+    if hospitals.count() > 0:
+        dist_df = fact_df.alias("events").crossJoin(hospitals.alias("hosp")) \
+            .withColumn("dist_m", F.expr("ST_Distance(events.geometry, hosp.geometry) * 111319.9")) # Approx meters from degrees
+        
+        window = Window.partitionBy("event_uuid").orderBy("dist_m")
+        nearest_hosp = dist_df.withColumn("rn", F.row_number().over(window)) \
+            .filter(F.col("rn") == 1) \
+            .select(
+                F.col("event_uuid"),
+                F.col("infrastructure_id").alias("nearest_hospital_id"),
+                F.col("dist_m").alias("nearest_hospital_distance_meters")
+            )
+            
+        fact_df = fact_df.join(nearest_hosp, "event_uuid", "left")
+    else:
+        fact_df = fact_df.withColumn("nearest_hospital_id", F.lit(None)) \
+            .withColumn("nearest_hospital_distance_meters", F.lit(None))
 
-    # For each event, calculate distance to all infrastructure points
-    # and find minimum
-
-    # Note: This is computationally expensive for large datasets
-    # In production, would use spatial indexing or approximate methods
-
-    # Placeholder: add distance column (would need full implementation)
-    result = fact_df.withColumn(
-        "nearest_hospital_distance_meters",
-        F.lit(None),  # To be computed with ST_Distance
-    )
-    result = result.withColumn("nearest_hospital_id", F.lit(None))
-    result = result.withColumn("nearest_fire_station_distance_meters", F.lit(None))
-    result = result.withColumn("nearest_fire_station_id", F.lit(None))
-
-    logger.info(
-        "Spatial distance join complete (placeholder - needs full implementation)"
-    )
-
-    return result
+    logger.info("Spatial distance join complete.")
+    return fact_df
 
 
 # =============================================================================
@@ -509,11 +550,11 @@ def spatial_join_events_to_nearest_infrastructure(
 def write_gold_table(
     df: "DataFrame", config: Config, table_name: str, mode: str = "overwrite"
 ) -> None:
-    """Write DataFrame to Gold layer as Parquet (local path)."""
+    """Write DataFrame to Gold layer as Delta Table."""
     path = f"{config.LOCAL_GOLD_PATH}/{table_name}"
-    logger.info(f"Writing Gold table: {path}")
+    logger.info(f"Writing Gold Delta table: {path}")
 
-    df.write.mode(mode).option("compression", "snappy").parquet(path)
+    df.write.format("delta").mode(mode).option("compression", "snappy").save(path)
 
     logger.info(f"Gold table {table_name} written: {df.count()} records")
 
