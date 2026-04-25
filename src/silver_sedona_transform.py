@@ -54,8 +54,8 @@ class Config:
     BUCKET_SILVER = "geo-lakehouse/silver"
 
     # Local paths for Docker (use host.docker.internal for MinIO access)
-    LOCAL_BRONZE_PATH = "/workspace/data/bronze"
-    LOCAL_SILVER_PATH = "/workspace/data/silver"
+    LOCAL_BRONZE_PATH = "/tmp/geoai/bronze"
+    LOCAL_SILVER_PATH = "/tmp/geoai/silver"
 
     # Spark Configuration
     SPARK_MASTER = os.getenv("SPARK_MASTER_URL", "local[*]")
@@ -367,21 +367,19 @@ def transform_neighborhoods(
         return None
 
     # Try to find geometry column (varies by dataset)
-    # Common names: geometry, geom, the_geom, boundary
     geom_col = next(
         (c for c in df.columns if c in ["geometry", "geom", "the_geom"]), None
     )
 
     if geom_col:
-        # Use existing geometry column
         df = parse_geojson_geometry(df, geom_col, "geometry")
     else:
-        # Try parsing entire row as GeoJSON
-        df = df.withColumn("geometry", F.lit(None))  # Placeholder
+        # Try to parse from sample data format in bronze_ingestion
+        df = parse_geojson_geometry(df, "geometry", "geometry")
 
     # Add metadata
     df = df.withColumn("source", F.lit("neighborhoods"))
-    df = df.withColumn("source_id", F.lit(None))  # Would need to extract from data
+    df = df.withColumn("source_id", F.expr("uuid()"))
 
     # Neighborhood name field
     name_col = next((c for c in df.columns if "name" in c.lower()), None)
@@ -390,15 +388,46 @@ def transform_neighborhoods(
 
     df = df.withColumn("processing_timestamp", F.current_timestamp())
 
-    # Return with lat/lon instead of geometry
     return df.select(
         "source",
         "source_id",
         "neighborhood_name",
-        "latitude",
-        "longitude",
+        "geometry",
         "processing_timestamp",
     )
+
+
+def filter_by_land_mask(
+    spark: "SparkSession", df: "DataFrame", neighborhoods_df: "DataFrame"
+) -> "DataFrame":
+    """
+    Remove points that fall in the water by checking if they are within any neighborhood polygon.
+    Uses Sedona ST_Within for spatial filtering.
+    """
+    from pyspark.sql import functions as F
+
+    if df is None or neighborhoods_df is None:
+        return df
+
+    logger.info(f"Applying land mask spatial filter to {df.count()} points...")
+
+    # Perform spatial join (Point-In-Polygon)
+    # ST_Within(point, polygon)
+    # We use a left semi join to keep only points that are within at least one neighborhood
+    try:
+        # Register temp views for SQL-like spatial join if needed, or use expr
+        filtered_df = df.alias("pts").join(
+            neighborhoods_df.alias("land"),
+            F.expr("ST_Within(pts.geometry, land.geometry)"),
+            "left_semi"
+        )
+        
+        final_count = filtered_df.count()
+        logger.info(f"Spatial filtering complete. Points remaining: {final_count}")
+        return filtered_df
+    except Exception as e:
+        logger.warning(f"Spatial filtering failed: {e}. Returning original data.")
+        return df
 
 
 def transform_usgs_earthquakes(
@@ -578,31 +607,42 @@ def run_silver_pipeline():
         spark = create_spark_session(config)
 
         # =========================================================================
-        # Transform each data source
+        # Transform Land Mask first (Neighborhoods)
         # =========================================================================
-
-        logger.info("[1/5] Transforming US Accidents...")
-        df_accidents = transform_us_accidents(spark, config)
-        if df_accidents:
-            write_silver_table(spark, df_accidents, config, "us_accidents")
-
-        logger.info("[2/5] Transforming Neighborhoods...")
+        logger.info("[1/5] Transforming Neighborhoods (Land Mask)...")
         df_neighborhoods = transform_neighborhoods(spark, config)
         if df_neighborhoods:
             write_silver_table(spark, df_neighborhoods, config, "neighborhoods")
 
+        # =========================================================================
+        # Transform other data sources and apply land mask
+        # =========================================================================
+
+        logger.info("[2/5] Transforming US Accidents...")
+        df_accidents = transform_us_accidents(spark, config)
+        if df_accidents and df_neighborhoods:
+            df_accidents = filter_by_land_mask(spark, df_accidents, df_neighborhoods)
+        if df_accidents:
+            write_silver_table(spark, df_accidents, config, "us_accidents")
+
         logger.info("[3/5] Transforming USGS Earthquakes...")
         df_usgs = transform_usgs_earthquakes(spark, config)
+        # Earthquakes are global/regional, maybe don't filter them strictly by NYC neighborhoods?
+        # Keeping as is for now.
         if df_usgs:
             write_silver_table(spark, df_usgs, config, "usgs_earthquakes")
 
         logger.info("[4/5] Transforming OSM Infrastructure...")
         df_osm = transform_osm_infrastructure(spark, config)
+        if df_osm and df_neighborhoods:
+            df_osm = filter_by_land_mask(spark, df_osm, df_neighborhoods)
         if df_osm:
             write_silver_table(spark, df_osm, config, "osm_infrastructure")
 
         logger.info("[5/5] Transforming NYC 311 Requests...")
         df_311 = transform_nyc_311(spark, config)
+        if df_311 and df_neighborhoods:
+            df_311 = filter_by_land_mask(spark, df_311, df_neighborhoods)
         if df_311:
             write_silver_table(spark, df_311, config, "nyc_311_requests")
 

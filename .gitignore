@@ -78,13 +78,15 @@ workspace/
 /tmp/
 *.parquet
 *.csv
-# Keep Grafana dashboards tracked
-!grafana/dashboards/*.json
-*.json
 *.geojson
 data/
 logs/
 *.log
+# Generic JSON (after exceptions above)
+*.json
+# Required data files (do not ignore)
+!nyc_landmask.json
+!nyc_boundary.json
 
 # -----------------------------------------------------------------------------
 # Spark & Hadoop
