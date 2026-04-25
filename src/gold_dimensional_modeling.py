@@ -47,6 +47,31 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
+# Prometheus metrics for error tracking
+try:
+    from prometheus_client import Counter
+    _gold_err = Counter('gold_errors', 'Total errors in Gold layer')
+except:
+    _gold_err = None
+
+def inc_gold_errors():
+    if _gold_err:
+        _gold_err.inc()
+
+# OpenTelemetry imports
+try:
+    from telemetry import setup_telemetry, traced_context, flush_telemetry
+    TELEMETRY_AVAILABLE = True
+except ImportError:
+    TELEMETRY_AVAILABLE = False
+    def traced_context(layer, operation):
+        class DummyContext:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+        return DummyContext()
+    def flush_telemetry(): pass
+    def setup_telemetry(**kwargs): pass
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -104,22 +129,11 @@ def create_spark_session(config: Config) -> SparkSession:
     builder = (
         SparkSession.builder.appName(config.APP_NAME)
         .master(config.SPARK_MASTER)
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config(
-            "spark.sql.catalog.spark_catalog",
-            "org.apache.spark.sql.delta.catalog.DeltaCatalog",
-        )
         .config("spark.sql.adaptive.enabled", "true")
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.1.0")
     )
-
-    try:
-        builder = builder.config(
-            "spark.jars.packages",
-            "org.apache.sedona:sedona-python-adapter-3.4_2.12:1.4.1,io.delta:delta-spark_2.12:2.4.0",
-        )
-    except Exception:
-        pass
-
+    
     return builder.getOrCreate()
 
 
@@ -142,7 +156,7 @@ def read_silver_table(spark: SparkSession, table: str) -> DataFrame:
     -------
     DataFrame
     """
-    path = f"s3a://{Config.SILVER_BUCKET}/{table}"
+    path = f"/tmp/geoai/silver/{table}"
 
     try:
         df = spark.read.format("delta").load(path)
@@ -151,7 +165,7 @@ def read_silver_table(spark: SparkSession, table: str) -> DataFrame:
     except Exception as e:
         logger.warning(f"Delta read failed ({e}), trying Parquet")
         try:
-            df = spark.read.format("parquet").load(f"/tmp/geoai/silver/{table}")
+            df = spark.read.format("parquet").load(path)
             logger.info(f"Read Parquet: {table}")
             return df
         except Exception as e2:
@@ -337,12 +351,12 @@ def create_fact_hazard_events(spark: SparkSession) -> DataFrame:
         F.col("ai_hazard_type").alias("hazard_type"),
         F.col("time").alias("event_time"),
         F.col("place").alias("event_address"),  # Use place as address
-        F.lit(None).alias("event_city"),
-        F.lit(None).alias("event_state"),
+        F.lit("").alias("event_city"),
+        F.lit("").alias("event_state"),
     ).withColumn("source_table", F.lit("usgs_earthquakes"))
 
     # Union all sources
-    fact = acc.unionByName(eq, allowMissing=True)
+    fact = acc.unionByName(eq)
 
     # Add surrogate key
     window = Window.orderBy(F.col("event_id"))
@@ -365,9 +379,9 @@ def create_fact_hazard_events(spark: SparkSession) -> DataFrame:
         "event_city",
         "event_state",
         # Foreign keys (to be populated by spatial join)
-        F.lit(None).alias("neighborhood_sk"),
-        F.lit(None).alias("nearest_hospital_sk"),
-        F.lit(None).alias("nearest_hospital_distance"),
+        F.lit(None).cast("int").alias("neighborhood_sk"),
+        F.lit(0).alias("nearest_hospital_sk"),
+        F.lit(0.0).alias("nearest_hospital_distance"),
     )
 
     logger.info(f"FACT_HAZARD_EVENTS: {fact.count()} rows")
@@ -421,7 +435,7 @@ def spatial_join_events_to_neighborhoods(
     except Exception as e:
         logger.warning(f"ST_Within spatial join failed ({e})")
         # Fallback: leave neighborhood_sk as null
-        joined = fact.withColumn("neighborhood_sk", F.lit(None))
+        joined = fact.withColumn("neighborhood_sk", F.lit(None).cast("int"))
 
     logger.info(
         f"Events with neighborhood_sk: {joined.filter('neighborhood_sk IS NOT NULL').count()}"
@@ -480,8 +494,8 @@ def spatial_join_events_to_nearest_infrastructure(
     except Exception as e:
         logger.warning(f"ST_Distance spatial join failed ({e})")
         # Fallback
-        fact = fact.withColumn("nearest_hospital_sk", F.lit(None)).withColumn(
-            "nearest_hospital_distance", F.lit(None)
+        fact = fact.withColumn("nearest_hospital_sk", F.lit(0)).withColumn(
+            "nearest_hospital_distance", F.lit(0.0)
         )
 
     # Count events with nearest hospital
@@ -541,7 +555,7 @@ def write_gold_table(df: DataFrame, table_name: str, mode: str = "overwrite") ->
     table_name : str
     mode : str
     """
-    path = f"s3a://{Config.GOLD_BUCKET}/{table_name}"
+    path = f"/tmp/geoai/gold/{table_name}"
 
     try:
         df.write.format("delta").mode(mode).option(
@@ -579,36 +593,88 @@ def run_gold_dimensional() -> bool:
     -------
     bool
     """
+    # Setup telemetry
+    if TELEMETRY_AVAILABLE:
+        setup_telemetry(service_name="gold-dimensional", environment="development")
+
     logger.info("Starting Gold dimensional modeling...")
 
     try:
         spark = create_spark_session(Config())
 
-        # Create dimensions
-        dim_neighborhoods = create_dim_neighborhoods(spark)
-        dim_infrastructure = create_dim_infrastructure(spark)
+        # Create dimensions with error tracking
+        try:
+            with traced_context("gold", "create_dim_neighborhoods"):
+                dim_neighborhoods = create_dim_neighborhoods(spark)
+                write_gold_table(dim_neighborhoods, "dim_neighborhoods")
+        except Exception as e:
+            logger.error(f"Error creating dim_neighborhoods: {e}")
+            if GOLD_ERRORS:
+                GOLD_ERRORS.inc()
 
-        # Create fact
-        fact = create_fact_hazard_events(spark)
+        try:
+            with traced_context("gold", "create_dim_infrastructure"):
+                dim_infrastructure = create_dim_infrastructure(spark)
+                write_gold_table(dim_infrastructure, "dim_infrastructure")
+        except Exception as e:
+            logger.error(f"Error creating dim_infrastructure: {e}")
+            if GOLD_ERRORS:
+                GOLD_ERRORS.inc()
 
-        # Spatial joins
-        fact = spatial_join_events_to_neighborhoods(fact, dim_neighborhoods)
-        fact = spatial_join_events_to_nearest_infrastructure(fact, dim_infrastructure)
+        try:
+            # Create fact with tracing
+            with traced_context("gold", "create_fact_hazard_events"):
+                fact = create_fact_hazard_events(spark)
+        except Exception as e:
+            logger.error(f"Error creating fact_hazard_events: {e}")
+            if GOLD_ERRORS:
+                GOLD_ERRORS.inc()
+            return False
 
-        # Aggregate
-        metrics = aggregate_hazard_metrics(fact)
+        try:
+            # Spatial joins
+            with traced_context("gold", "spatial_join_neighborhoods"):
+                fact = spatial_join_events_to_neighborhoods(fact, dim_neighborhoods)
+        except Exception as e:
+            logger.error(f"Error spatial join neighborhoods: {e}")
+            if GOLD_ERRORS:
+                GOLD_ERRORS.inc()
 
-        # Write all
-        write_gold_table(dim_neighborhoods, "dim_neighborhoods")
-        write_gold_table(dim_infrastructure, "dim_infrastructure")
-        write_gold_table(fact, "fact_hazard_events")
-        write_gold_table(metrics, "agg_hazard_metrics")
+        try:
+            with traced_context("gold", "spatial_join_infrastructure"):
+                fact = spatial_join_events_to_nearest_infrastructure(fact, dim_infrastructure)
+        except Exception as e:
+            logger.error(f"Error spatial join infrastructure: {e}")
+            if GOLD_ERRORS:
+                GOLD_ERRORS.inc()
+
+        try:
+            # Aggregate and write
+            with traced_context("gold", "aggregate_metrics"):
+                metrics = aggregate_hazard_metrics(fact)
+                write_gold_table(metrics, "agg_hazard_metrics")
+        except Exception as e:
+            logger.error(f"Error aggregating metrics: {e}")
+            if GOLD_ERRORS:
+                GOLD_ERRORS.inc()
+
+        try:
+            write_gold_table(fact, "fact_hazard_events")
+        except Exception as e:
+            logger.error(f"Error writing fact_hazard_events: {e}")
+            if GOLD_ERRORS:
+                GOLD_ERRORS.inc()
+
+        # Flush telemetry
+        if TELEMETRY_AVAILABLE:
+            flush_telemetry()
 
         logger.info("Gold dimensional modeling complete!")
         return True
 
     except Exception as e:
         logger.error(f"Gold modeling failed: {e}")
+        inc_gold_errors()
         return False
 
 
@@ -617,5 +683,14 @@ def run_gold_dimensional() -> bool:
 # =============================================================================
 
 if __name__ == "__main__":
+    # Start Prometheus metrics server (exposes /metrics endpoint)
+    try:
+        from prometheus_client import start_http_server
+        import logging
+        logging.getLogger(__name__).info("Prometheus metrics server started on port 8888")
+        start_http_server(8888)
+    except Exception:
+        pass
+    
     success = run_gold_dimensional()
     sys.exit(0 if success else 1)

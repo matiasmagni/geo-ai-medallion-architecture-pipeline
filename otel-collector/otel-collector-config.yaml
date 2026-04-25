@@ -1,0 +1,62 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  jaeger:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:14250
+      thrift_http:
+        endpoint: 0.0.0.0:14268
+
+processors:
+  batch:
+    timeout: 10s
+    send_batch_size: 1000
+  memory_limiter:
+    limit_mib: 400
+    check_interval: 1s
+  attributes:
+    actions:
+      - key: environment
+        value: development
+        action: insert
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    namespace: otel
+    const_labels:
+      service: geo-ai-pipeline
+
+  otlp:
+    endpoint: http://jaeger:4317
+    tls:
+      insecure: true
+
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, memory_limiter, attributes]
+      exporters: [debug, otlp]
+
+    metrics:
+      receivers: [otlp]
+      processors: [batch, memory_limiter]
+      exporters: [prometheus]
+
+    logs:
+      receivers: [otlp]
+      processors: [batch, memory_limiter]
+      exporters: [debug, otlp]
+
+  telemetry:
+    logs:
+      level: info
