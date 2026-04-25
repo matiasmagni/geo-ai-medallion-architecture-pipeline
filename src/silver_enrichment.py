@@ -139,7 +139,19 @@ def create_spark_session(config: Config) -> SparkSession:
     except Exception:
         logger.warning("Could not add Sedona packages - may not be installed")
 
-    return builder.getOrCreate()
+    spark = builder.getOrCreate()
+
+    # Initialize Sedona context so ST_* functions are registered
+    try:
+        from sedona.spark import SedonaContext
+        SedonaContext.create(spark)
+        logger.info("Sedona context initialized — ST_* spatial functions available")
+    except ImportError:
+        logger.warning("Sedona not installed — spatial functions disabled")
+    except Exception as e:
+        logger.warning(f"Sedona initialization failed: {e}")
+
+    return spark
 
 
 # =============================================================================
@@ -225,6 +237,178 @@ def parse_geojson_geometry(
         # Keep original as string
 
     return df
+
+
+# =============================================================================
+# LAND MASK FILTERING (Remove Water Dots)
+# =============================================================================
+
+
+def load_neighborhoods_mask(spark: SparkSession, config: Config) -> Optional[DataFrame]:
+    """
+    Load neighborhood polygons to use as a land mask.
+
+    Parameters
+    ----------
+    spark : SparkSession
+    config : Configuration
+
+    Returns
+    -------
+    DataFrame
+        Neighborhoods GeoDataFrame or None
+    """
+    try:
+        df = read_bronze_table(spark, "us_neighborhoods")
+        df = parse_geojson_geometry(df)
+        count = df.count()
+
+        if count == 0:
+            logger.warning("Neighborhoods loaded but have 0 rows — land mask disabled")
+            return None
+
+        # Compute bounding box to validate neighborhood coverage
+        bbox_row = df.select(
+            F.expr("ST_XMin(geometry)").alias("min_lon"),
+            F.expr("ST_XMax(geometry)").alias("max_lon"),
+            F.expr("ST_YMin(geometry)").alias("min_lat"),
+            F.expr("ST_YMax(geometry)").alias("max_lat"),
+        ).collect()[0]
+
+        logger.info(
+            f"Loaded land mask: {count} neighborhood polygons, "
+            f"bbox ({bbox_row.min_lon:.2f},{bbox_row.min_lat:.2f}) -> "
+            f"({bbox_row.max_lon:.2f},{bbox_row.max_lat:.2f})"
+        )
+        return df
+    except Exception as e:
+        logger.warning(f"Could not load neighborhoods for land mask: {e}")
+        return None
+
+
+def filter_points_on_land(
+    spark: SparkSession,
+    points_df: DataFrame,
+    neighborhoods_df: DataFrame,
+    geometry_col: str = "geometry",
+    source_name: str = "unknown",
+) -> DataFrame:
+    """
+    Remove points that fall in water by keeping only points within land polygons.
+    Uses Sedona ST_Within for spatial filtering.
+
+    Parameters
+    ----------
+    spark : SparkSession
+    points_df : DataFrame
+        Points DataFrame with geometry column
+    neighborhoods_df : DataFrame
+        Neighborhood polygons for land mask
+    geometry_col : str
+        Name of geometry column in points_df
+    source_name : str
+        Source name for logging
+
+    Returns
+    -------
+    DataFrame
+        Filtered DataFrame with only land points
+    """
+    if neighborhoods_df is None:
+        logger.error(f"[{source_name}] NO LAND MASK — water filter DISABLED! All points will pass through!")
+        return points_df
+
+    initial_count = points_df.count()
+    points_df = points_df.filter(F.col(geometry_col).isNotNull())
+    neighborhoods_df = neighborhoods_df.filter(F.col("geometry").isNotNull())
+    n_polys = neighborhoods_df.count()
+    logger.info(
+        f"[{source_name}] Land filter: {initial_count} input points, {n_polys} neighborhood polygons"
+    )
+
+    try:
+        filtered_df = _filter_spatial(spark, points_df, neighborhoods_df, initial_count, source_name)
+        if filtered_df.count() >= initial_count * 0.95:
+            logger.warning(
+                f"[{source_name}] POSSIBLE FILTER FAILURE: {initial_count} -> {filtered_df.count()} "
+                f"(only {initial_count - filtered_df.count()} removed)"
+            )
+        return filtered_df
+    except Exception as e:
+        logger.warning(f"[{source_name}] ST_Within failed ({e}), trying numeric bounds")
+        return _filter_numeric_bbox(spark, points_df, neighborhoods_df, initial_count, source_name)
+
+
+def _filter_spatial(
+    spark: SparkSession,
+    points_df: DataFrame,
+    neighborhoods_df: DataFrame,
+    initial_count: int,
+    source_name: str,
+) -> DataFrame:
+    """Filter using ST_Within spatial join."""
+    neighborhoods_df.createOrReplaceTempView("land_polys")
+    points_df.createOrReplaceTempView("points")
+
+    filtered_df = spark.sql("""
+        SELECT p.*
+        FROM points p
+        INNER JOIN land_polys l
+        ON ST_Within(p.geometry, l.geometry)
+    """)
+    final_count = filtered_df.count()
+    removed = initial_count - final_count
+    logger.info(f"[{source_name}] ST_Within filter: {initial_count} -> {final_count} (removed {removed})")
+    return filtered_df
+
+
+def _filter_numeric_bbox(
+    spark: SparkSession,
+    points_df: DataFrame,
+    neighborhoods_df: DataFrame,
+    initial_count: int,
+    source_name: str,
+) -> DataFrame:
+    """
+    Filter by numeric bounding box from neighborhood polygons.
+    Uses ST_XMin/Max/ST_YMin/Max to get bbox — works when geometry is parsed.
+    Falls back to raw min/max on lat/lon columns when ST unavailable.
+    """
+    try:
+        neighborhoods_df.createOrReplaceTempView("land_polys")
+
+        bbox = spark.sql("""
+            SELECT
+                MIN(ST_XMin(geometry)) AS min_lon,
+                MAX(ST_XMax(geometry)) AS max_lon,
+                MIN(ST_YMin(geometry)) AS min_lat,
+                MAX(ST_YMax(geometry)) AS max_lat
+            FROM land_polys
+        """).collect()[0]
+
+        min_lon, max_lon = float(bbox.min_lon), float(bbox.max_lon)
+        min_lat, max_lat = float(bbox.min_lat), float(bbox.max_lat)
+        logger.info(
+            f"[{source_name}] Numeric bbox: ({min_lon:.4f},{min_lat:.4f}) -> ({max_lon:.4f},{max_lon:.4f})"
+        )
+
+    except Exception:
+        logger.warning(f"[{source_name}] ST unavailable — using approximate US lat/lon range")
+        min_lon, max_lon = -125.0, -66.0
+        min_lat, max_lat = 24.0, 50.0
+
+    filtered_df = points_df.filter(
+        (F.col("longitude") >= min_lon)
+        & (F.col("longitude") <= max_lon)
+        & (F.col("latitude") >= min_lat)
+        & (F.col("latitude") <= max_lat)
+    )
+    final_count = filtered_df.count()
+    removed = initial_count - final_count
+    logger.info(
+        f"[{source_name}] Numeric bbox filter: {initial_count} -> {final_count} (removed {removed})"
+    )
+    return filtered_df
 
 
 # =============================================================================
@@ -445,21 +629,26 @@ def read_bronze_table(spark: SparkSession, source: str) -> DataFrame:
 # =============================================================================
 
 
-def transform_us_accidents(spark: SparkSession, config: Config) -> DataFrame:
+def transform_us_accidents(
+    spark: SparkSession, config: Config, neighborhoods_df: Optional[DataFrame] = None
+) -> DataFrame:
     """
-    Transform US Accidents: Add geometry + AI enrichment.
+    Transform US Accidents: Add geometry + land mask filter + AI enrichment.
 
     Pipeline:
     1. Read from Bronze
     2. Create geometry from lat/lon
-    3. Apply Ollama UDF to description
-    4. Parse AI JSON to columns
-    5. Select final columns
+    3. Apply land mask filter (remove water dots)
+    4. Apply Ollama UDF to description
+    5. Parse AI JSON to columns
+    6. Select final columns
 
     Parameters
     ----------
     spark : SparkSession
     config : Config
+    neighborhoods_df : Optional[DataFrame]
+        Neighborhood polygons for land mask filtering
 
     Returns
     -------
@@ -475,6 +664,11 @@ def transform_us_accidents(spark: SparkSession, config: Config) -> DataFrame:
     df = create_geometry_from_latlon(
         df, lat_col="latitude", lon_col="longitude", geometry_col="geometry"
     )
+
+    # Apply land mask filter to remove water dots
+    if neighborhoods_df is not None:
+        df = filter_points_on_land(spark, df, neighborhoods_df, source_name="us_accidents")
+        logger.info("Applied land mask filter to US Accidents")
 
     # AI Enrichment via Ollama UDF
     ollama_udf = create_ollama_enrichment_udf(config)
@@ -508,14 +702,18 @@ def transform_us_accidents(spark: SparkSession, config: Config) -> DataFrame:
     return df
 
 
-def transform_nyc_311(spark: SparkSession, config: Config) -> DataFrame:
+def transform_nyc_311(
+    spark: SparkSession, config: Config, neighborhoods_df: Optional[DataFrame] = None
+) -> DataFrame:
     """
-    Transform NYC 311: Add geometry + AI enrichment.
+    Transform NYC 311: Add geometry + land mask filter + AI enrichment.
 
     Parameters
     ----------
     spark : SparkSession
     config : Config
+    neighborhoods_df : Optional[DataFrame]
+        Neighborhood polygons for land mask filtering
 
     Returns
     -------
@@ -530,6 +728,11 @@ def transform_nyc_311(spark: SparkSession, config: Config) -> DataFrame:
 
     # Spatial standardization
     df = create_geometry_from_latlon(df)
+
+    # Apply land mask filter to remove water dots
+    if neighborhoods_df is not None:
+        df = filter_points_on_land(spark, df, neighborhoods_df, source_name="nyc_311")
+        logger.info("Applied land mask filter to NYC 311")
 
     # AI Enrichment
     ollama_udf = create_ollama_enrichment_udf(config)
@@ -600,14 +803,18 @@ def transform_usgs_earthquakes(spark: SparkSession, config: Config) -> DataFrame
     return df
 
 
-def transform_osm_infrastructure(spark: SparkSession, config: Config) -> DataFrame:
+def transform_osm_infrastructure(
+    spark: SparkSession, config: Config, neighborhoods_df: Optional[DataFrame] = None
+) -> DataFrame:
     """
-    Transform OSM Infrastructure: Add geometry.
+    Transform OSM Infrastructure: Add geometry + land mask filter.
 
     Parameters
     ----------
     spark : SparkSession
     config : Config
+    neighborhoods_df : Optional[DataFrame]
+        Neighborhood polygons for land mask filtering
 
     Returns
     -------
@@ -619,6 +826,11 @@ def transform_osm_infrastructure(spark: SparkSession, config: Config) -> DataFra
 
     # Spatial standardization
     df = create_geometry_from_latlon(df)
+
+    # Apply land mask filter to remove water dots
+    if neighborhoods_df is not None:
+        df = filter_points_on_land(spark, df, neighborhoods_df, source_name="osm_infrastructure")
+        logger.info("Applied land mask filter to OSM Infrastructure")
 
     # Metadata
     df = df.withColumn("silver_updated", F.current_timestamp())
@@ -690,9 +902,11 @@ def run_silver_enrichment() -> bool:
 
     Pipeline:
     1. Read Bronze data
-    2. Spatial standardization (geometry)
-    3. AI Enrichment via Ollama (ALL LLM here!)
-    4. Write Delta Tables
+    2. Load neighborhoods for land mask
+    3. Spatial standardization (geometry)
+    4. Apply land mask filter (remove water dots)
+    5. AI Enrichment via Ollama (ALL LLM here!)
+    6. Write Delta Tables
 
     Returns
     -------
@@ -705,27 +919,25 @@ def run_silver_enrichment() -> bool:
         spark = create_spark_session(Config())
         config = Config()
 
-        # Transform all sources
-        transform_us_accidents(spark, config)
-        transform_usgs_earthquakes(spark, config)
-        transform_osm_infrastructure(spark, config)
-        transform_us_neighborhoods(spark, config)
+        # Load neighborhoods for land mask filtering (before transforming point sources)
+        logger.info("Loading neighborhoods for land mask...")
+        neighborhoods_df = load_neighborhoods_mask(spark, config)
+
+        # Transform all sources with land mask filtering
+        df_accidents = transform_us_accidents(spark, config, neighborhoods_df)
+        df_usgs = transform_usgs_earthquakes(spark, config)
+        df_osm = transform_osm_infrastructure(spark, config, neighborhoods_df)
+        df_neighborhoods = transform_us_neighborhoods(spark, config)
 
         # NYC 311 requires more processing
         # (skip in this version due to token limits)
-        # transform_nyc_311(spark, config)
+        # df_311 = transform_nyc_311(spark, config, neighborhoods_df)
 
         # Write all
-        write_silver_table(transform_us_accidents(spark, config), "us_accidents_silver")
-        write_silver_table(
-            transform_usgs_earthquakes(spark, config), "usgs_earthquakes_silver"
-        )
-        write_silver_table(
-            transform_osm_infrastructure(spark, config), "osm_infrastructure_silver"
-        )
-        write_silver_table(
-            transform_us_neighborhoods(spark, config), "us_neighborhoods_silver"
-        )
+        write_silver_table(df_accidents, "us_accidents_silver")
+        write_silver_table(df_usgs, "usgs_earthquakes_silver")
+        write_silver_table(df_osm, "osm_infrastructure_silver")
+        write_silver_table(df_neighborhoods, "us_neighborhoods_silver")
 
         logger.info("Silver enrichment complete!")
         return True
