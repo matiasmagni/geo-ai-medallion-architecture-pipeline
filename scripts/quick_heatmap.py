@@ -61,9 +61,8 @@ def generate_heatmap(output_path: str = "geo-ai-heatmap/public/data/heatmap.geoj
             filtered = gpd.sjoin(gdf, land_mask, how="inner", predicate='intersects')
             return pd.DataFrame(filtered.drop(columns=['index_right', 'geometry']))
 
-        initial_pred = len(predictions_df)
         predictions_df = apply_mask(predictions_df)
-        print(f"  ML Predictions: Filtered {initial_pred} -> {len(predictions_df)} on land")
+        print(f"  ML Predictions: Filtered to {len(predictions_df)} on land")
 
         # Hazards were already filtered in Silver, but let's be safe
         hazards_df = apply_mask(hazards_df)
