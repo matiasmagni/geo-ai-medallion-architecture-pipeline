@@ -6,99 +6,175 @@
   <img src="https://img.shields.io/badge/Delta%20Lake-3.1-1E88E5?style=flat" alt="Delta Lake">
   <img src="https://img.shields.io/badge/MinIO-FF6F00?style=flat&logo=minio&logoColor=white" alt="MinIO">
   <img src="https://img.shields.io/badge/Ollama-latest-FF4081?style=flat" alt="Ollama">
+  <img src="https://img.shields.io/badge/OpenTelemetry-latest-28a745?style=flat&logo=opentelemetry" alt="OpenTelemetry">
+  <img src="https://img.shields.io/badge/MLflow-latest-0194E2?style=flat&logo=mlflow" alt="MLflow">
+  <img src="https://img.shields.io/badge/Blender-latest-E58E00?style=flat&logo=blender" alt="Blender">
 </p>
 
-A production-ready **Local Databricks Clone** for GeoAI portfolio projects using Medallion Architecture with Apache Spark, Apache Sedona, Delta Lake, MinIO, and local LLM integration.
+A production-ready **Local Databricks Clone** for GeoAI portfolio projects using Medallion Architecture with Apache Spark, Apache Sedona, Delta Lake, MinIO, OpenTelemetry, MLflow, Blender 3D visualization, and local LLM integration.
 
 ---
 
 ## Table of Contents
 
-1. [Architecture](#architecture)
-2. [Data Sources](#data-sources)
-3. [Getting Started](#getting-started)
-4. [Pipeline Components](#pipeline-components)
-5. [Heatmap Visualization](#heatmap-visualization)
-6. [Testing](#testing)
-7. [Deployment](#deployment)
-8. [Troubleshooting](#troubleshooting)
+1. [Architecture Overview](#architecture-overview)
+2. [Tech Stack](#tech-stack)
+3. [Data & Model Flow](#data-and-model-flow)
+4. [Web App Architecture](#web-app-architecture)
+5. [Getting Started](#getting-started)
+6. [Pipeline Components](#pipeline-components)
+7. [Testing Pyramid](#testing-pyramid)
+8. [Blender 3D Integration](#blender-3d-integration)
+9. [Deployment](#deployment)
+10. [Troubleshooting](#troubleshooting)
+11. [API References](#api-references)
 
 ---
 
-## Architecture
+## Architecture Overview
 
-### System Architecture
+### High-Level System Architecture
 
 ```mermaid
 flowchart TB
     subgraph Sources["📥 Data Sources"]
+        direction LR
         S1[("US Accidents<br/>Kaggle CSV")]
         S2[("US Neighborhoods<br/>Kaggle GeoJSON")]
         S3[("USGS Earthquakes<br/>Live API")]
         S4[("OSM Hospitals/Fire<br/>Overpass API")]
         S5[("NYC 311<br/>Socrata API")]
-        S6[("NYC Land Mask<br/>NYC Open Data NTA")]
+        S6[("Aviation Data<br/>OpenSky Network")]
+        S7[("Weather Data<br/>NOAA NWS")]
+        S8[("NYC Land Mask<br/>NYC Open Data NTA")]
     end
-
+    
     subgraph Bronze["<b>🥉 Bronze Layer:</b> Raw Ingestion"]
         B[("MinIO<br/>s3://geo-lakehouse/bronze")]
     end
-
-    subgraph Silver["<b>🥈 Silver Layer</b>: Spatial + LLM Enrichment"]
-        ST[("Apache Sedona<br/>ST_Point, ST_Within<br/>EPSG:4326")]
+    
+    subgraph Silver["<b>🥈 Silver Layer:</b> Spatial Transform + Land Mask"]
+        ST[("Apache Sedona<br/>ST_Point, ST_GeomFromGeoJSON<br/>EPSG:4326")]
+        Mask[("Land Mask<br/>ST_Within Filter")]
         SDelta[("Delta Lake<br/>ACID Transactions")]
     end
-
-    subgraph Gold["<b>🥇 Gold Layer</b>: Star Schema + AI"]
+    
+    subgraph Gold["<b>🥇 Gold Layer:</b> Star Schema + AI + MLflow"]
         Ollama[("Ollama<br/>llama3.2:1b")]
+        SJ[("Sedona Spatial Joins<br/>ST_Within, ST_Distance")]
         GF[("Gold Delta Tables<br/>Fact + Dimensions")]
+        MLflow[("MLflow<br/>Tracking & Registry")]
     end
-
+    
+    subgraph Viz["🎨 Visualization"]
+        WA["Next.js Web App"]
+        B3D["Blender 3D Simulation"]
+    end
+    
     Sources --> Bronze
     Bronze --> ST
-    ST --> SDelta
+    ST --> Mask
+    S8 -.->|Land mask<br/>filtering| Mask
+    Mask --> SDelta
     SDelta --> Ollama
-    Ollama --> GF
-    S6 -.->|Land mask<br/>filtering| ST
-```
-
-### Medallion Layers
-
-```mermaid
-flowchart TB
-    subgraph BRONZE["<b>🥉 Bronze:</b> Raw Data"]
-        direction LR
-        B1[US Accidents CSV] ~~~ B2[USGS JSON] ~~~ B3[OSM GeoJSON]
-    end
-
-    subgraph SILVER["<b>🥈 Silver:</b> Cleaned, Spatial, Enriched"]
-        direction LR
-        S1[Accidents + Geometry] ~~~ S2[Earthquakes + Geometry] ~~~ S3[Neighborhoods + Polygons]
-    end
-
-    subgraph GOLD["<b>🥇 Gold:</b> Star Schema + AI Insights"]
-        direction LR
-        G1[FACT_HAZARD_EVENTS] ~~~ G2[DIM_NEIGHBORHOODS] ~~~ G3[DIM_INFRASTRUCTURE]
-    end
-
-    BRONZE -->|"Ingest"| SILVER
-    SILVER -->|"Transform"| GOLD
+    Ollama --> SJ
+    SJ --> GF
+    GF -.->|Model Tracking| MLflow
+    GF --> WA
+    GF --> B3D
 ```
 
 ---
 
-## Data Sources
+## Data and Model Flow
 
-| Source | Type | Endpoint | Purpose |
-|--------|------|----------|---------|
-| **US Accidents** | CSV | Kaggle (`US_Accidents_2019-2023.csv`) | Primary hazard events |
-| **US Neighborhoods** | GeoJSON | Kaggle (`us_neighborhoods.csv`) | Neighborhood boundaries for spatial joins |
-| **USGS Earthquakes** | JSON | `earthquake.usgs.gov/fdsnws/event/1/query` | Live earthquake feed |
-| **OSM Infrastructure** | GeoJSON | Overpass API (`/api/interpreter`) | Hospitals & fire stations |
-| **NYC 311 Requests** | JSON | Socrata API (`data.cityofnewyork.us`) | Service request incidents |
-| **NYC Land Mask** | GeoJSON | NYC Open Data NTA (`services5.arcgis.com`) | 195 neighborhood polygons for filtering water dots |
+### Pipeline Execution Flow
 
-> **NYC Land Mask (`nyc_landmask.json`):** Used by `scripts/quick_heatmap.py` to filter ML prediction points, preventing dots from appearing over water (East River, harbor, ocean). Source: [NYC Open Data Neighborhood Tabulation Areas (2010)](https://data.cityofnewyork.us/City-Government/NTA-2010/fxpq-c8ku) — 195 features.
+```mermaid
+sequenceDiagram
+    participant User
+    participant Bronze as Bronze Ingestion
+    participant MinIO as MinIO Storage
+    participant Spark as Spark Cluster
+    participant Sedona as Apache Sedona
+    participant OTel as OpenTelemetry
+    participant MLflow as MLflow
+    participant Ollama as Ollama LLM
+    participant Gold as Gold Layer
+    
+    User->>Bronze: Run ingestion
+    Bronze->>MinIO: Upload raw data
+    OTel->>Spark: Trace pipeline execution
+    
+    Bronze->>Spark: Trigger silver transform
+    Spark->>Sedona: Apply ST_Point, ST_Within (Land Mask)
+    Sedona-->>Spark: Cleaned & Filtered DataFrames
+    Spark->>MinIO: Write Silver Delta Tables
+    
+    Spark->>Gold: Trigger gold enrichment
+    Gold->>Ollama: Extract severity/hazard_type/flight_risk
+    Ollama-->>Gold: JSON enrichment
+    Gold->>Sedona: ST_Within, ST_Distance joins
+    Gold->>MLflow: Log Model Metrics/Run
+    Gold->>MinIO: Write Gold Delta Tables
+    
+    User->>Gold: Query results
+    User->>MLflow: Inspect Training Runs
+```
+
+### MLflow Model Training Flow
+
+```mermaid
+flowchart TB
+    subgraph Training["🚀 Model Training & Tracking"]
+        D[("Gold Delta Tables")] -->|"Load"| T("Training Scripts<br/>train_aviation_models.py")
+        T -->|"Train"| M("Model (Scikit-Learn/XGBoost)")
+        M -->|"Log params, metrics, model"| ML("MLflow Tracking")
+        ML -->|"Register Version"| MR("MLflow Model Registry")
+    end
+    
+    subgraph Inference["🔮 Production Inference"]
+        MR -->|"Deploy"| S("Inference Service")
+        S -->|"Score"| NewD("New Data")
+    end
+```
+
+---
+
+## Web App Architecture
+
+```mermaid
+flowchart TD
+    User["🌍 End User"]
+    subgraph Frontend["🎨 Next.js (Client)"]
+        UI["React / MapClient.tsx"]
+        L["Leaflet.js<br/>Heatmap / Markers"]
+    end
+    
+    subgraph Backend["⚙️ Pipeline Data"]
+        API["/public/data/heatmap.geojson"]
+    end
+    
+    User --> UI
+    UI --> L
+    L -- "Fetch" --> API
+```
+
+---
+
+## Tech Stack
+
+| Component | Technology | Version | Purpose |
+|-----------|------------|---------|---------|
+| **Compute Engine** | Apache Spark (PySpark) | 3.5.0 | Distributed processing |
+| **Spatial Engine** | Apache Sedona | 1.5.0 | Geospatial SQL on Spark |
+| **Storage** | Delta Lake | 3.1.0 | ACID on data lake |
+| **Object Storage** | MinIO | Latest | S3-compatible storage |
+| **Observability** | OpenTelemetry | Latest | Metrics & Trace collection |
+| **Database** | PostgreSQL | 15 | Hive Metastore + MLflow DB |
+| **MLOps** | MLflow | 2.10.0 | Experiment tracking |
+| **LLM** | Ollama | Latest | Local LLM inference |
+| **Viz** | Blender | Latest | 3D Simulation Rendering |
 
 ---
 
@@ -107,6 +183,7 @@ flowchart TB
 ### Prerequisites
 
 ```bash
+# Core requirements
 Docker >= 20.10
 Docker Compose >= 2.0
 Python >= 3.9
@@ -125,44 +202,18 @@ cp .env.example .env
 # 3. Start infrastructure
 docker compose up -d
 
-# 4. Run full pipeline (Bronze → Silver → Gold)
-python src/run_pipeline.py
+# 4. Verify services
+./scripts/run_pipeline.sh status
 
-# 5. Generate heatmap for web visualization
-python scripts/quick_heatmap.py
+# 5. Run ingestion (Bronze)
+python src/bronze_ingestion.py
 
-# 6. Start heatmap web app
-cd geo-ai-heatmap && npm install && npm run dev
-# Open http://localhost:3000
-```
+# 6. Run Silver transform
+spark-submit src/silver_sedona_transform.py
 
-### Service Ports
-
-| Service | Port | URL |
-|---------|------|-----|
-| Spark UI | 9080 | http://localhost:9080 |
-| MinIO Console | 9901 | http://localhost:9901 |
-| PostgreSQL | 5434 | localhost:5434 |
-| Ollama | 11434 | http://localhost:11434 |
-| Heatmap Web | 3000 | http://localhost:3000 |
-
-### Environment Variables
-
-```bash
-# Required
-export MINIO_ROOT_USER=minioadmin
-export MINIO_ROOT_PASSWORD=minioadmin123
-export POSTGRES_DB=geometastore
-export POSTGRES_USER=geoai
-export POSTGRES_PASSWORD=geoi_secure_pass_2024
-
-# LLM (Ollama)
-export OLLAMA_BASE_URL=http://geoai-ollama:11434
-export OLLAMA_MODEL=llama3.2:1b
-
-# Optional (for Kaggle data)
-export KAGGLE_USERNAME=your_username
-export KAGGLE_API_KEY=your_api_key
+# 7. Run Gold enrichment & Model training
+spark-submit src/gold_schema_and_ai_enrichment.py
+python src/train_aviation_models.py
 ```
 
 ---
@@ -173,65 +224,49 @@ export KAGGLE_API_KEY=your_api_key
 
 **File:** `src/bronze_ingestion.py`
 
-Ingests raw data from all sources into MinIO bronze storage.
+### 2. Silver Layer (Spatial Transform + Land Masking)
 
-```python
-def fetch_usgs_earthquakes(config, days_back=30, min_magnitude=2.0):
-    """Fetch from USGS FDSN Web Services API"""
+**File:** `src/silver_sedona_transform.py`
 
-def fetch_osm_infrastructure(config, bbox=(-125, 24, -66, 50)):
-    """Fetch hospitals/fire stations via Overpass API"""
+### 3. Gold Layer (AI + Spatial Joins + MLflow)
 
-def fetch_nyc_311_requests(config, limit=100000):
-    """Fetch 311 service requests from Socrata"""
-```
+**File:** `src/gold_schema_and_ai_enrichment.py`
 
-**Output:** Raw JSON/CSV in `s3://geo-lakehouse/bronze/`
+### 4. Training (MLflow)
+
+**File:** `src/train_aviation_models.py`
 
 ---
 
-### 2. Silver Layer (Spatial + LLM Enrichment)
+## Testing Pyramid
 
-**File:** `src/silver_enrichment.py`
+```mermaid
+block-beta
+columns 13 
 
-Applies geometry creation, land mask filtering, and LLM-based hazard type classification.
+space:4 L3["🔴 L3: End-to-End<br/>Full Pipeline"]:5 space:4
+space:3 L2["🟠 L2: Integration Services<br/>Real Services / Local Docker"]:7 space:3
+space:1 L1["🟡 L1: Unit with Mocks<br/>Mocked Dependencies / Partial Mocks"]:11 space:1
+L0["🟢 L0: Unit Isolation (Most Tests)<br/>Pure Functions / No I/O / No Dependencies"]:13
 
-```python
-def create_geometry_from_latlon(df, lat_col, lon_col):
-    """ST_Point - Convert lat/lng to geometry"""
-    return df.withColumn(
-        "geometry",
-        F.expr("ST_Point(cast(lon as double), cast(lat as double))")
-    )
-
-def apply_land_mask_filter(df, land_mask_gdf):
-    """Filter points outside land area using ST_Within + US bounds fallback"""
+style L3 fill:#ff5722,color:#fff,stroke:#333,stroke-width:2px
+style L2 fill:#ff9800,color:#fff,stroke:#333,stroke-width:2px
+style L1 fill:#ffc107,color:#000,stroke:#333,stroke-width:2px
+style L0 fill:#ffeb3b,color:#000,stroke:#333,stroke-width:2px
 ```
-
-**Land Mask Filtering:** Three-layer strategy:
-1. **ST_Within** — Sedona spatial join against neighborhood polygons
-2. **Numeric BBox** — ST_XMin/Max bounds on geometry column
-3. **US Range Fallback** — lon ∈ [-125, -66], lat ∈ [24, 50]
-
-**Output:** Delta Tables in `s3://geo-lakehouse/silver/`
 
 ---
 
-### 3. Gold Layer (Dimensional Modeling)
+## Blender 3D Integration
 
-**File:** `src/gold_dimensional_modeling.py`
+**File:** `scripts/render_flight_simulation.py`
 
-Builds Kimball star schema — fact and dimension tables — from silver layer.
+Automates 3D data visualization from Gold layer Parquet files. Uses Python API within Blender to procedurally generate NYC flight simulation environments.
 
-```python
-def build_fact_hazard_events(silver_df, dim_neighborhoods):
-    """Fact table: hazard events with neighborhood FK"""
-
-def build_dim_neighborhoods(neighborhoods_df):
-    """Dimension table: neighborhood attributes"""
+```bash
+# Generate 3D simulation
+blender -b examples/nyc_ml_heatmap.blend -P scripts/render_flight_simulation.py
 ```
-
-**Output:** Star schema in `s3://geo-lakehouse/gold/`
 
 ---
 
@@ -239,69 +274,7 @@ def build_dim_neighborhoods(neighborhoods_df):
 
 **File:** `scripts/quick_heatmap.py`
 
-Reads gold layer parquet files and generates a Leaflet heatmap as a GeoJSON file.
-
-```python
-def generate_heatmap(output_path="geo-ai-heatmap/public/data/heatmap.geojson"):
-    land_mask = get_land_mask()      # NYC Open Data NTA (195 features)
-    predictions_df = pd.read_parquet(...)
-    hazards_df = pd.read_parquet(...)
-
-    # Spatial join with land mask to remove water dots
-    filtered = gpd.sjoin(gdf, land_mask, how="inner", predicate='intersects')
-```
-
-**Web app:** `geo-ai-heatmap/` — Next.js + Leaflet heatmap.
-
-```bash
-cd geo-ai-heatmap && npm install && npm run dev
-```
-
-Output: `geo-ai-heatmap/public/data/heatmap.geojson` (547 points, ~537 on land after filtering)
-
----
-
-## Testing
-
-```bash
-# All tests
-python -m pytest tests/ -v
-
-# By level
-python -m pytest tests/L0.py -v  # Unit isolation
-python -m pytest tests/L1.py -v  # Component integration
-python -m pytest tests/L2.py -v  # Pipeline stages
-python -m pytest tests/L3.py -v  # E2E
-```
-
----
-
-## Deployment
-
-```yaml
-services:
-  spark:
-    image: jupyter/pyspark-notebook:spark-3.5.0
-    ports:
-      - "9077:7077"
-      - "9080:8080"
-
-  minio:
-    image: minio/minio:latest
-    ports:
-      - "9900:9000"
-      - "9901:9001"
-
-  postgres:
-    image: postgres:15-alpine
-    ports:
-      - "5434:5432"
-
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-```
+Reads gold layer parquet files and generates a Leaflet heatmap.
 
 ---
 
@@ -309,34 +282,22 @@ services:
 
 | Issue | Solution |
 |-------|----------|
-| Spark cannot connect to MinIO | Check `MINIO_ENDPOINT` and bucket names in config |
-| Ollama API timeout | Increase `OLLAMA_TIMEOUT` in config |
-| Sedona ST_* functions not found | Ensure `SedonaContext.create(spark)` is called to register the plugin |
-| Null geometries after transform | Verify lat/lon column names match expected (`latitude`/`Start_Lat` etc.) |
-| Heatmap shows dots in water | Re-run `python scripts/quick_heatmap.py` to regenerate with land mask filter |
-| Points missing near shoreline | Land mask uses `intersects` predicate (lenient) — points touching land boundaries are kept |
-
-### Debug Commands
-
-```bash
-# Check Spark logs
-docker compose logs spark
-
-# Test MinIO connectivity
-docker exec geoai-spark python -c "import boto3; print('OK')"
-
-# Verify Delta tables
-spark.read.format("delta").load("s3://bucket/table").printSchema()
-```
+| Spark not connecting to MinIO | Check MinIO endpoint in config |
+| Ollama API timeout | Increase `OLLAMA_TIMEOUT` |
+| Sedona functions not found | Ensure Sedona plugin registered |
+| Missing telemetry data | Ensure OpenTelemetry collector is running |
+| MLflow not tracking | Check `MLFLOW_TRACKING_URI` environment variable |
 
 ---
 
 ## Credits
 
-- [Apache Sedona](https://sedona.apache.org/) — Geospatial SQL on Spark
-- [Delta Lake](https://delta.io/) — ACID transactions on data lakes
-- [Ollama](https://ollama.ai/) — Local LLM inference
-- [NYC Open Data](https://data.cityofnewyork.us/) — Neighborhood Tabulation Areas
+- [Apache Sedona](https://sedona.apache.org/) - Geospatial SQL on Spark
+- [Delta Lake](https://delta.io/) - ACID transactions on data lakes
+- [Ollama](https://ollama.ai/) - Local LLM inference
+- [OpenTelemetry](https://opentelemetry.io/) - Observability framework
+- [MLflow](https://mlflow.org/) - MLOps platform
+- [Blender](https://www.blender.org/) - 3D Content Creation
 
 ---
 

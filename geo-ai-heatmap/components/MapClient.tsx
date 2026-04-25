@@ -80,13 +80,18 @@ function MapLayers({ data, activeCategories }: MapLayersProps) {
       });
 
       circle.bindPopup(`
-        <div style="font-family: Arial, sans-serif; min-width: 150px;">
+        <div style="font-family: Arial, sans-serif; min-width: 200px;">
           <strong style="color: ${color}; font-size: 14px;">${label}</strong>
+          ${feature.properties.source === 'ml_prediction' ? '<span style="color:#666;font-size:10px;"> (ML PREDICTED)</span>' : ''}
           <hr style="margin: 6px 0; border: none; border-top: 1px solid #ddd;" />
           <div style="font-size: 12px; color: #333;">
             <div><strong>Priority:</strong> ${weight > 0.7 ? "HIGH" : weight > 0.4 ? "MEDIUM" : "LOW"}</div>
             <div><strong>Score:</strong> ${(weight * 100).toFixed(0)}%</div>
             <div><strong>Location:</strong> ${lat.toFixed(4)}, ${lng.toFixed(4)}</div>
+            ${feature.properties.hazard_type ? `<div><strong>Type:</strong> ${feature.properties.hazard_type}</div>` : ''}
+            ${feature.properties.response_time_pred ? `<div><strong>Response Time:</strong> ${feature.properties.response_time_pred.toFixed(1)} min</div>` : ''}
+            ${feature.properties.bed_demand_pred ? `<div><strong>Bed Demand:</strong> ${feature.properties.bed_demand_pred.toFixed(0)} beds</div>` : ''}
+            ${feature.properties.fire_risk_prob ? `<div><strong>Fire Risk:</strong> ${(feature.properties.fire_risk_prob * 100).toFixed(0)}%</div>` : ''}
           </div>
         </div>
       `);
@@ -168,7 +173,7 @@ function Legend({ activeCategories, onToggle }: LegendProps) {
         borderRadius: "12px",
         boxShadow: "0 4px 20px rgba(0,0,0,0.35)",
         zIndex: 1000,
-        minWidth: "110px",
+        minWidth: "140px",
       }}
     >
       <div
@@ -183,7 +188,7 @@ function Legend({ activeCategories, onToggle }: LegendProps) {
           letterSpacing: "0.5px",
         }}
       >
-        NYC 911 CALLS
+        NYC HAZARD ML
       </div>
       <div style={{ display: "flex", flexDirection: "column" }}>
         {CATEGORIES.map((cat) => (
@@ -194,6 +199,18 @@ function Legend({ activeCategories, onToggle }: LegendProps) {
             onClick={() => onToggle(cat.id)}
           />
         ))}
+      </div>
+      <div
+        style={{
+          marginTop: "12px",
+          paddingTop: "10px",
+          borderTop: "2px solid #eee",
+          fontSize: "10px",
+          color: "#666",
+          textAlign: "center",
+        }}
+      >
+        ML Models: Fire Risk, Hospital Overpop, Emergency Response, Bed Demand, Ambulance Dispatch
       </div>
     </div>
   );

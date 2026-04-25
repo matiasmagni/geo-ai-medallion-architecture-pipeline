@@ -70,7 +70,6 @@ workspace/
 
 # OpenCode (generated)
 .git/opencodes
-*.ipynb_checkpoints
 
 # -----------------------------------------------------------------------------
 # Data & Logs
@@ -78,15 +77,19 @@ workspace/
 /tmp/
 *.parquet
 *.csv
-*.geojson
+# GeoJSON data files (do not track - generated)
+# Exception: static reference files
+# !nyc_landmask.json
 data/
 logs/
 *.log
-# Generic JSON (after exceptions above)
+# All JSON files
 *.json
-# Required data files (do not ignore)
-!nyc_landmask.json
-!nyc_boundary.json
+
+# -----------------------------------------------------------------------------
+# MLflow Artifacts (local, do not track)
+# -----------------------------------------------------------------------------
+geo-ai-mlflow/
 
 # -----------------------------------------------------------------------------
 # Spark & Hadoop
@@ -116,6 +119,7 @@ htmlcov/
 *.cover
 .tox/
 .hypothesis/
+.playwright-mcp
 
 # -----------------------------------------------------------------------------
 # Secrets (NEVER commit these!)
@@ -129,14 +133,14 @@ htmlcov/
 credentials.json
 secrets.yaml
 
-# -----------------------------------------------------------------------------
-# Unity / Game Dev (if applicable)
-# -----------------------------------------------------------------------------
-# [Ll]ibrary/
-# [Tt]emp/
-# [Oo]bj/
-# [Bb]uild/
-# [Bb]uilds/
-# Logs/
-# *.unitypackage
-# Assets/External/
+# Junk / Temporary Files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+.DS_Store
+*.blend1
+*.blend2
+nyc_heatmap_cinematic.blend
