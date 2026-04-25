@@ -40,16 +40,16 @@ flowchart TB
         S6[("NYC Land Mask<br/>NYC Open Data NTA")]
     end
 
-    subgraph Bronze["🥉 Bronze Layer<br/>Raw Ingestion"]
+    subgraph Bronze["<b>🥉 Bronze Layer:</b> Raw Ingestion"]
         B[("MinIO<br/>s3://geo-lakehouse/bronze")]
     end
 
-    subgraph Silver["🥈 Silver Layer<br/>Spatial + LLM Enrichment"]
+    subgraph Silver["<b>🥈 Silver Layer</b>: Spatial + LLM Enrichment"]
         ST[("Apache Sedona<br/>ST_Point, ST_Within<br/>EPSG:4326")]
         SDelta[("Delta Lake<br/>ACID Transactions")]
     end
 
-    subgraph Gold["🥇 Gold Layer<br/>Star Schema + AI"]
+    subgraph Gold["<b>🥇 Gold Layer</b>: Star Schema + AI"]
         Ollama[("Ollama<br/>llama3.2:1b")]
         GF[("Gold Delta Tables<br/>Fact + Dimensions")]
     end
@@ -65,23 +65,20 @@ flowchart TB
 ### Medallion Layers
 
 ```mermaid
-flowchart LR
-    subgraph BRONZE["🥉 Bronze<br/>Raw Data"]
-        B1[US Accidents CSV]
-        B2[USGS JSON]
-        B3[OSM GeoJSON]
+flowchart TB
+    subgraph BRONZE["<b>🥉 Bronze:</b> Raw Data"]
+        direction LR
+        B1[US Accidents CSV] ~~~ B2[USGS JSON] ~~~ B3[OSM GeoJSON]
     end
 
-    subgraph SILVER["🥈 Silver<br/>Cleaned, Spatial, Enriched"]
-        S1[Accidents + Geometry]
-        S2[Earthquakes + Geometry]
-        S3[Neighborhoods + Polygons]
+    subgraph SILVER["<b>🥈 Silver:</b> Cleaned, Spatial, Enriched"]
+        direction LR
+        S1[Accidents + Geometry] ~~~ S2[Earthquakes + Geometry] ~~~ S3[Neighborhoods + Polygons]
     end
 
-    subgraph GOLD["🥇 Gold<br/>Star Schema + AI Insights"]
-        G1[FACT_HAZARD_EVENTS]
-        G2[DIM_NEIGHBORHOODS]
-        G3[DIM_INFRASTRUCTURE]
+    subgraph GOLD["<b>🥇 Gold:</b> Star Schema + AI Insights"]
+        direction LR
+        G1[FACT_HAZARD_EVENTS] ~~~ G2[DIM_NEIGHBORHOODS] ~~~ G3[DIM_INFRASTRUCTURE]
     end
 
     BRONZE -->|"Ingest"| SILVER
