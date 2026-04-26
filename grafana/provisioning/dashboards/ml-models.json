@@ -132,7 +132,7 @@
           "refId": "A"
         }
       ],
-      "title": "🤖 Total Models Trained",
+      "title": "\ud83e\udd16 Total Models Trained",
       "type": "stat"
     },
     {
@@ -200,7 +200,7 @@
           "refId": "A"
         }
       ],
-      "title": "🔄 Pipeline Runs",
+      "title": "\ud83d\udd04 Pipeline Runs",
       "type": "stat"
     },
     {
@@ -270,7 +270,7 @@
           "refId": "A"
         }
       ],
-      "title": "✨ Gold Quality Score",
+      "title": "\u2728 Gold Quality Score",
       "type": "stat"
     },
     {
@@ -338,7 +338,7 @@
           "refId": "A"
         }
       ],
-      "title": "⏱️ Avg Training Time",
+      "title": "\u23f1\ufe0f Avg Training Time",
       "type": "stat"
     },
     {
@@ -421,7 +421,7 @@
           "refId": "A"
         }
       ],
-      "title": "🥉 Bronze Success",
+      "title": "\ud83e\udd49 Bronze Success",
       "type": "stat"
     },
     {
@@ -491,7 +491,7 @@
           "refId": "A"
         }
       ],
-      "title": "🥈 Silver Success",
+      "title": "\ud83e\udd48 Silver Success",
       "type": "stat"
     },
     {
@@ -561,7 +561,7 @@
           "refId": "A"
         }
       ],
-      "title": "🥇 Gold Success",
+      "title": "\ud83e\udd47 Gold Success",
       "type": "stat"
     },
     {
@@ -733,7 +733,7 @@
           "refId": "C"
         }
       ],
-      "title": "📈 Records Processed",
+      "title": "\ud83d\udcc8 Records Processed",
       "type": "timeseries"
     },
     {
@@ -845,7 +845,7 @@
           "refId": "C"
         }
       ],
-      "title": "❌ Cumulative Errors",
+      "title": "\u274c Cumulative Errors",
       "type": "timeseries"
     },
     {
@@ -926,7 +926,7 @@
           "refId": "A"
         }
       ],
-      "title": "🎯 Models Trained",
+      "title": "\ud83c\udfaf Models Trained",
       "type": "stat"
     },
     {
@@ -994,7 +994,7 @@
           "refId": "A"
         }
       ],
-      "title": "🔄 Pipeline Runs",
+      "title": "\ud83d\udd04 Pipeline Runs",
       "type": "stat"
     },
     {
@@ -1062,75 +1062,7 @@
           "refId": "A"
         }
       ],
-      "title": "✨ Gold Enriched",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 10
-              },
-              {
-                "color": "green",
-                "value": 100
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 8,
-        "x": 16,
-        "y": 26
-      },
-      "id": 14,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "textMode": "auto"
-      },
-      "pluginVersion": "10.2.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "expr": "gold_records_processed_total",
-          "legendFormat": "Inferences",
-          "refId": "A"
-        }
-      ],
-      "title": "✨ Gold Enriched",
+      "title": "\u2728 Gold Enriched",
       "type": "stat"
     }
   ],
