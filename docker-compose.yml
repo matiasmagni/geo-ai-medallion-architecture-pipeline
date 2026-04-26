@@ -48,6 +48,7 @@ services:
       - ./src:/home/jovyan/src
       - ./tests:/home/jovyan/tests
       - ./start-spark.sh:/start-spark.sh
+      - spark-logs:/home/jovyan/spark_logs
     networks:
       - geoai-network
     depends_on:
@@ -189,3 +190,4 @@ volumes:
   ollama-data:
   mlflow-data:
   grafana-data:
+  spark-logs:
