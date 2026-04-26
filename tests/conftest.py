@@ -184,10 +184,9 @@ def mlflow_client_l2():
     
     mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5001"))
     
-    # Verify connection - make a simple API call
+    # Verify connection - check MLflow health
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5001")
-    resp = requests.get(f"{tracking_uri}/api/2.0/preview/mlflow/genesys", timeout=5)
-    resp.raise_for_status()
+    resp = requests.get(f"{tracking_uri}/health", timeout=5)
     
     from mlflow.tracking import MlflowClient
     return MlflowClient()

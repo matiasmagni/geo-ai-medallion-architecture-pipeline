@@ -33,29 +33,23 @@ class TestMinIOComponent:
 
     def test_minio_connection(self, minio_client_l2):
         """Test MinIO connection."""
-        if minio_client_l2 is None:
-            pytest.skip("MinIO not available - ensure Docker services are running")
-        
-        # Try to list buckets
-        response = minio_client_l2.list_buckets()
-        assert isinstance(response.get('Buckets'), list)
+        # List buckets - returns a list directly in newer minio
+        buckets = minio_client_l2.list_buckets()
+        assert isinstance(buckets, list)
 
     def test_minio_bucket_creation(self, minio_client_l2):
         """Test MinIO bucket creation."""
-        if minio_client_l2 is None:
-            pytest.skip("MinIO not available - ensure Docker services are running")
-        
         import uuid
         bucket_name = f"test-bucket-{uuid.uuid4().hex[:8]}"
         
-        minio_client_l2.create_bucket(Bucket=bucket_name)
+        minio_client_l2.make_bucket(bucket_name)
         
-        # Verify bucket exists
+        # Verify bucket exists  
         buckets = minio_client_l2.list_buckets()
-        bucket_names = [b['Name'] for b in buckets.get('Buckets', [])]
+        bucket_names = [b.name for b in buckets]
         
         # Cleanup
-        minio_client_l2.delete_bucket(Bucket=bucket_name)
+        minio_client_l2.remove_bucket(bucket_name)
         
         assert bucket_name in bucket_names
 
