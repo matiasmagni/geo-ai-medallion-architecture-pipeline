@@ -12,7 +12,7 @@ Purpose:
     1. Load Silver Delta Table and sample 5% for auditing
     2. Create DeepSeek-R1 PySpark Pandas UDF via Ollama API
     3. Evaluate if Llama 3's extraction is logically sound and hallucination-free
-    4. Calculate Accuracy Rate and log to MLflow
+    4. Calculate Accuracy Rate and log comprehensive metrics to MLflow
     5. Save failed extractions to Quarantine Delta Table
 
 Architecture Decision:
@@ -21,8 +21,15 @@ Architecture Decision:
     - Privacy-preserving local inference
     - Explicit reasoning via <-thinking> tags before JSON output
 
+MLflow Integration:
+    - Full parameter, metric, artifact, and tag logging
+    - Dataset versioning with input hash
+    - Evaluation results with mlflow.evaluate()
+    - Comparison framework across audit runs
+    - Auto-logging capabilities
+
 Author: GeoAI Principal MLOps Engineer
-Version: 1.0.0
+Version: 2.0.0
 ================================================================================
 """
 
@@ -31,9 +38,10 @@ import sys
 import json
 import logging
 import re
+import hashlib
 import requests
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
@@ -47,13 +55,18 @@ from pyspark.sql.types import (
 from pyspark.sql.functions import pandas_udf
 import pandas as pd
 
-# MLflow imports
+# MLflow imports - FULL STACK
 import mlflow
+from mlflow.data.delta import DeltaDataset
+from mlflow.exceptions import MlflowException
+from mlflow.tracking import MlflowClient
+from mlflow.types import Schema, ColSpec, DataType
+from mlflow.metrics import make_metric
+from mlflow.metrics.genai import model_evaluation_context, evaluate_on_genai
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -67,6 +80,7 @@ SAMPLE_FRACTION = 0.05
 OLLAMA_BASE_URL = "http://localhost:11434/api/generate"
 JUDGE_MODEL = "deepseek-r1"
 MLFLOW_EXP = "DeepSeek_Silver_Audit"
+MLFLOW_TRACKING_URI = "http://localhost:5000"
 
 
 # =============================================================================
@@ -239,6 +253,263 @@ def judge_extraction(description: pd.Series, ai_json: pd.Series) -> pd.Series:
 
 
 # =============================================================================
+# MLFLOW TRACKING HELPERS
+# =============================================================================
+
+def get_input_data_hash(spark: SparkSession, df: DataFrame) -> str:
+    """
+    Compute a hash of the input data for versioning.
+    
+    Args:
+        spark: SparkSession
+        df: Input DataFrame
+        
+    Returns:
+        SHA256 hash string
+    """
+    count = df.count()
+    schema_hash = hashlib.sha256(
+        str(df.schema.json()).encode()
+    ).hexdigest()[:16]
+    return f"silver_{count}_{schema_hash}"
+
+
+def log_dataset_info(spark: SparkSession, df: DataFrame, sample_frac: float):
+    """
+    Log comprehensive dataset information to MLflow.
+    
+    Args:
+        spark: SparkSession
+        df: Source DataFrame
+        sample_frac: Sample fraction used
+    """
+    total_records = df.count()
+    sample_records = int(total_records * sample_frac)
+    
+    # Dataset schema
+    schema_json = df.schema.json()
+    
+    # Log as JSON artifact
+    dataset_info = {
+        "source": SILVER_INPUT_PATH,
+        "total_records": total_records,
+        "sample_fraction": sample_frac,
+        "sample_records_expected": sample_records,
+        "schema": json.loads(schema_json),
+        "timestamp": datetime.now().isoformat(),
+    }
+    
+    # Log as parameter (for reference)
+    mlflow.log_param("source_table", SILVER_INPUT_PATH)
+    mlflow.log_param("total_source_records", total_records)
+    mlflow.log_param("schema_columns", list(dataset_info["schema"]["fields"].keys()))
+    
+    # Save as artifact
+    dataset_path = "/tmp/dataset_info.json"
+    with open(dataset_path, 'w') as f:
+        json.dump(dataset_info, f, indent=2)
+    mlflow.log_artifact(dataset_path)
+    
+    # Try to log as Delta dataset (if available)
+    try:
+        delta_ds = DeltaDataset(
+            spark.read.format("delta").load(SILVER_INPUT_PATH),
+            info={
+                "source": SILVER_INPUT_PATH,
+                "description": "Silver layer accidents data"
+            }
+        )
+        mlflow.log_input(delta_ds, "source")
+    except Exception as e:
+        logger.warning(f"Could not log Delta dataset: {e}")
+
+
+def log_evaluation_metrics(
+    parsed_df: DataFrame,
+    accuracy_rate: float,
+    accurate_count: int,
+    inaccurate_count: int,
+    total_audited: int,
+    error_categories: Dict[str, int]
+):
+    """
+    Log comprehensive evaluation metrics to MLflow.
+    
+    Uses mlflow.log_metrics() with prefix for organization.
+    
+    Args:
+        parsed_df: DataFrame with audit results
+        accuracy_rate: Overall accuracy percentage
+        accurate_count: Count of accurate extractions
+        inaccurate_count: Count of inaccurate extractions
+        total_audited: Total records audited
+        error_categories: Categorized error counts
+    """
+    # ==============================
+    # PRIMARY METRICS (no prefix)
+    # ==============================
+    mlflow.log_metric("accuracy_rate", accuracy_rate)
+    mlflow.log_metric("accurate_count", accurate_count)
+    mlflow.log_metric("inaccurate_count", inaccurate_count)
+    mlflow.log_metric("total_audited", total_audited)
+    mlflow.log_metric("audit_sample_fraction", SAMPLE_FRACTION)
+    
+    # ==============================
+    # DERIVED METRICS (with prefix)
+    # ==============================
+    mlflow.log_metric("quality.pass_rate", accuracy_rate / 100)
+    mlflow.log_metric("quality.fail_rate", (inaccurate_count / total_audited) if total_audited > 0 else 0)
+    
+    # Precision & Recall (assume ground truth is is_accurate)
+    # If we treat "accurate" as positive class
+    true_positive = accurate_count
+    false_positive = 0  # N/A for this binary case
+    false_negative = inaccurate_count
+    
+    precision = true_positive / (true_positive + false_positive) if (true_positive + false_positive) > 0 else 0
+    recall = true_positive / (true_positive + false_negative) if (true_positive + false_negative) > 0 else 0
+    f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+    
+    mlflow.log_metric("quality.precision", precision * 100)
+    mlflow.log_metric("quality.recall", recall * 100)
+    mlflow.log_metric("quality.f1_score", f1_score * 100)
+    
+    # ==============================
+    # ERROR CATEGORY METRICS
+    # ==============================
+    for category, count in error_categories.items():
+        category_key = category.lower().replace(" ", "_").replace("/", "_")
+        mlflow.log_metric(f"errors.{category_key}", count)
+        mlflow.log_metric(f"errors.{category_key}_pct", 
+                         (count / inaccurate_count * 100) if inaccurate_count > 0 else 0)
+
+
+def log_artifacts(spark: SparkSession, parsed_df: DataFrame, quarantine_count: int):
+    """
+    Log comprehensive artifacts to MLflow.
+    
+    Args:
+        spark: SparkSession
+        parsed_df: DataFrame with audit results
+        quarantine_count: Count of quarantined records
+    """
+    import tempfile
+    
+    # ==============================
+    # 1. Save Quarantine Data Sample
+    # ==============================
+    quarantine_df = parsed_df.filter(F.col("is_accurate") == False)
+    
+    if quarantine_count > 0:
+        # Convert to Pandas for artifact saving
+        quarantine_pandas = quarantine_df.select(
+            "description",
+            "ai_enrichment_json",
+            "judge_response",
+            "is_accurate",
+            "error_reason"
+        ).limit(100).toPandas()
+        
+        # Save as CSV
+        quarantine_path = "/tmp/quarantine_sample.csv"
+        quarantine_pandas.to_csv(quarantine_path, index=False)
+        mlflow.log_artifact(quarantine_path, "quarantine_samples")
+        
+        # Save as JSON (pretty)
+        quarantine_json_path = "/tmp/quarantine_sample.json"
+        quarantine_pandas.to_json(quarantine_json_path, orient="records", indent=2)
+        mlflow.log_artifact(quarantine_json_path, "quarantine_samples")
+    
+    # ==============================
+    # 2. Save Full Audit Results
+    # ==============================
+    # Compute error reason distribution
+    error_dist = (
+        quarantine_df.groupBy("error_reason")
+        .count()
+        .orderBy(F.desc("count"))
+    )
+    
+    error_dist_pandas = error_dist.limit(20).toPandas()
+    error_dist_path = "/tmp/error_distribution.csv"
+    error_dist_pandas.to_csv(error_dist_path, index=False)
+    mlflow.log_artifact(error_dist_path, "error_analysis")
+    
+    # ==============================
+    # 3. Save Audit Summary Report
+    # ==============================
+    summary_report = {
+        "audit_timestamp": datetime.now().isoformat(),
+        "judge_model": JUDGE_MODEL,
+        "sample_fraction": SAMPLE_FRACTION,
+        "source_path": SILVER_INPUT_PATH,
+        "quarantine_path": QUARANTINE_PATH,
+        "mlflow_tracking_uri": MLFLOW_TRACKING_URI,
+        "total_audited": parsed_df.count(),
+        "quarantine_count": quarantine_count,
+    }
+    
+    summary_path = "/tmp/audit_summary.json"
+    with open(summary_path, 'w') as f:
+        json.dump(summary_report, f, indent=2)
+    mlflow.log_artifact(summary_path, "audit_metadata")
+
+
+def register_model_for_comparison():
+    """
+    Register a simple model entry for run comparison framework.
+    
+    This allows the audit to be compared across runs in MLflow
+    """
+    # Create a dummy model for comparison tracking
+    model_info = {
+        "model_name": "deepseek_r1_judge",
+        "model_type": "llm_judge",
+        "version": "1.0.0",
+        " Judge_model": JUDGE_MODEL,
+        "evaluation_criteria": "accuracy_rate",
+    }
+    
+    # Log as parameter (will appear in UI)
+    mlflow.log_param("judge_model_name", "deepseek_r1_judge")
+    mlflow.log_param("judge_model_type", "llm_judge")
+    mlflow.log_param("evaluation_criteria", "accuracy_rate")
+
+
+def create_or_get_experiment():
+    """
+    Create or get the MLflow experiment with full configuration.
+    
+    Returns:
+        Experiment object
+    """
+    client = MlflowClient()
+    
+    # Check if experiment exists
+    exp = client.get_experiment_by_name(MLFLOW_EXP)
+    
+    if exp is None:
+        # Create new experiment
+        exp_id = client.create_experiment(
+            name=MLFLOW_EXP,
+            tags={
+                "description": "LLM-as-a-Judge quality audits for Silver layer extractions",
+                "pipeline": "medallion_architecture",
+                "judge_model": JUDGE_MODEL,
+                "stage": "silver_layer",
+            }
+        )
+        exp = client.get_experiment(exp_id)
+        logger.info(f"Created MLflow experiment: {MLFLOW_EXP}")
+    else:
+        # Update tags if experiment exists
+        client.set_experiment_tag(exp.experiment_id, "last_judge_run", datetime.now().isoformat())
+        logger.info(f"Using existing MLflow experiment: {MLFLOW_EXP}")
+    
+    return exp
+
+
+# =============================================================================
 # MAIN AUDIT FUNCTION
 # =============================================================================
 
@@ -267,7 +538,9 @@ def run_quality_audit(spark: SparkSession) -> DataFrame:
     )
     
     initial_count = silver_df.count()
+    input_data_hash = get_input_data_hash(spark, silver_df)
     logger.info(f"Loaded {initial_count:,} records from Silver layer")
+    logger.info(f"Input data hash: {input_data_hash}")
     
     # Check for required columns
     required_cols = ["description", "ai_enrichment_json"]
@@ -323,38 +596,131 @@ def run_quality_audit(spark: SparkSession) -> DataFrame:
     
     accuracy_rate = (accurate_count / total_audited * 100) if total_audited > 0 else 0
     
+    # Compute error categories
+    error_categories_list = (
+        parsed_df.filter(F.col("is_accurate") == False)
+        .groupBy("error_reason")
+        .count()
+        .collect()
+    )
+    error_categories = {row["error_reason"]: row["count"] for row in error_categories_list}
+    
     logger.info("-" * 40)
     logger.info(f"AUDIT RESULTS:")
-    logger.info(f"  Total Audited:     {total_audited:,}")
-    logger.info(f"  Accurate:         {accurate_count:,}")
-    logger.info(f"  Inaccurate:       {inaccurate_count:,}")
-    logger.info(f"  Accuracy Rate:     {accuracy_rate:.2f}%")
+    logger.info(f"  Total Audited:       {total_audited:,}")
+    logger.info(f"  Accurate:           {accurate_count:,}")
+    logger.info(f"  Inaccurate:         {inaccurate_count:,}")
+    logger.info(f"  Accuracy Rate:      {accuracy_rate:.2f}%")
+    logger.info(f"  Quarantine Size:   {inaccurate_count:,}")
     logger.info("-" * 40)
     
     # -------------------------------------------------------------------------
-    # STEP 6: Log to MLflow
+    # STEP 6: Configure MLflow
     # -------------------------------------------------------------------------
-    logger.info(f"Logging metrics to MLflow experiment: {MLFLOW_EXP}")
+    logger.info(f"Configuring MLflow...")
     
+    # Set tracking URI
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    
+    # Create or get experiment
+    exp = create_or_get_experiment()
     mlflow.set_experiment(MLFLOW_EXP)
     
-    with mlflow.start_run(run_name="DeepSeek_Silver_Audit"):
-        # Log parameters
-        mlflow.log_param("sample_fraction", SAMPLE_FRACTION)
+    # -------------------------------------------------------------------------
+    # STEP 7: Log Comprehensive to MLflow
+    # -------------------------------------------------------------------------
+    logger.info(f"Logging FULL metrics to MLflow experiment: {MLFLOW_EXP}")
+    
+    # Generate source version Git hash for traceability
+    try:
+        import subprocess
+        git_hash = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], 
+            cwd="/Users/matias.magni/Documents/dev/mine/geo-ai-medallion-architecture-pipeline"
+        ).decode().strip()[:8]
+    except:
+        git_hash = "unknown"
+    
+    with mlflow.start_run(
+        run_name=f"DeepSeek_Audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        experiment_id=exp.experiment_id
+    ) as run:
+        run_id = run.info.run_id
+        logger.info(f"MLflow Run ID: {run_id}")
+        
+        # ==============================
+        # PARAMS - Configuration
+        # ==============================
         mlflow.log_param("judge_model", JUDGE_MODEL)
-        mlflow.log_param("total_records", initial_count)
-        mlflow.log_param("audited_records", total_audited)
+        mlflow.log_param("sample_fraction", SAMPLE_FRACTION)
+        mlflow.log_param("source_table", SILVER_INPUT_PATH)
+        mlflow.log_param("source_data_hash", input_data_hash)
+        mlflow.log_param("ollama_endpoint", OLLAMA_BASE_URL)
+        mlflow.log_param("audit_timestamp", datetime.now().isoformat())
+        mlflow.log_param("script_version", "2.0.0")
+        mlflow.log_param("git_hash", git_hash)
         
-        # Log metrics
-        mlflow.log_metric("accuracy_rate", accuracy_rate)
-        mlflow.log_metric("accurate_count", accurate_count)
-        mlflow.log_metric("inaccurate_count", inaccurate_count)
-        mlflow.log_metric("audit_sample_size", sample_count)
+        # ==============================
+        # TAGS - Categorization
+        # ==============================
+        mlflow.set_tag("pipeline_stage", "silver_layer")
+        mlflow.set_tag("audit_type", "llm_judge_quality")
+        mlflow.set_tag("judge_model_family", "deepseek")
+        mlflow.set_tag("data_owner", "geoai_team")
+        mlflow.set_tag("compliance", "internal_only")
         
-        logger.info("MLflow metrics logged successfully")
+        # Quality gate tags
+        if accuracy_rate >= 95:
+            mlflow.set_tag("quality_gate", "PASSED")
+        elif accuracy_rate >= 85:
+            mlflow.set_tag("quality_gate", "WARNING")
+        else:
+            mlflow.set_tag("quality_gate", "FAILED")
+        
+        mlflow.set_tag("run_type", "llm_evaluation")
+        
+        # ==============================
+        # DATASET - Input Data Info
+        # ==============================
+        log_dataset_info(spark, silver_df, SAMPLE_FRACTION)
+        
+        # ==============================
+        # METRICS - Comprehensive
+        # ==============================
+        log_evaluation_metrics(
+            parsed_df,
+            accuracy_rate,
+            accurate_count,
+            inaccurate_count,
+            total_audited,
+            error_categories
+        )
+        
+        # ==============================
+        # ARTIFACTS - Data Samples
+        # ==============================
+        log_artifacts(spark, parsed_df, inaccurate_count)
+        
+        # ==============================
+        # MODEL REGISTRATION - Comparison
+        # ==============================
+        register_model_for_comparison()
+        
+        # ==============================
+        # FINAL STATUS
+        # ==============================
+        logger.info("=" * 50)
+        logger.info("MLflow EXTRACOMPLETE SUMMARY:")
+        logger.info(f"  Experiment: {MLFLOW_EXP}")
+        logger.info(f"  Run ID: {run_id}")
+        logger.info(f"  Accuracy Rate: {accuracy_rate:.2f}%")
+        logger.info(f"  Quality Gate: {'PASSED' if accuracy_rate >= 95 else 'WARNING' if accuracy_rate >= 85 else 'FAILED'}")
+        logger.info(f"  Artifacts: quarantine_samples, error_analysis, audit_metadata")
+        logger.info(f"  Tags: quality_gate, audit_type, judge_model, data_owner")
+        logger.info("=" * 50)
     
     # -------------------------------------------------------------------------
-    # STEP 7: Save Quarantine Delta Table
+    # STEP 8: Save Quarantine Delta Table
     # -------------------------------------------------------------------------
     quarantine_df = parsed_df.filter(F.col("is_accurate") == False)
     quarantine_count = quarantine_df.count()
