@@ -23,12 +23,12 @@ A production-ready **Local Databricks Clone** for GeoAI portfolio projects using
 4. [Data & Model Flow](#data-and-model-flow)
 5. [Web App Architecture](#web-app-architecture)
 6. [Getting Started](#getting-started)
-6. [Pipeline Components](#pipeline-components)
-7. [Testing Pyramid](#testing-pyramid)
-8. [Blender 3D Integration](#blender-3d-integration)
-9. [Deployment](#deployment)
-10. [Troubleshooting](#troubleshooting)
-11. [API References](#api-references)
+7. [Pipeline Components](#pipeline-components)
+8. [Testing Pyramid](#testing-pyramid)
+9. [Blender 3D Integration](#blender-3d-integration)
+10. [Deployment](#deployment)
+11. [Troubleshooting](#troubleshooting)
+12. [API References](#api-references)
 
 ---
 
@@ -40,14 +40,10 @@ A production-ready **Local Databricks Clone** for GeoAI portfolio projects using
 flowchart TB
     subgraph Sources["📥 Data Sources"]
         direction LR
-        S1[("US Accidents<br/>Kaggle CSV")]
-        S2[("US Neighborhoods<br/>Kaggle GeoJSON")]
-        S3[("USGS Earthquakes<br/>Live API")]
-        S4[("OSM Hospitals/Fire<br/>Overpass API")]
-        S5[("NYC 311<br/>Socrata API")]
-        S6[("Aviation Data<br/>OpenSky Network")]
-        S7[("Weather Data<br/>NOAA NWS")]
-        S8[("NYC Land Mask<br/>NYC Open Data NTA")]
+        S1[("US Accidents<br/>Kaggle CSV")] --> S2[("USGS Earthquakes<br/>Live API")]
+        S3[("OSM Hospital/Fire<br/>Overpass API")] --> S4[("NYC 311<br/>Socrata API")]
+        S5[("NYC Flights<br/>OpenSky API")] --> S6[("NYC Weather<br/>NOAA NWS API")]
+        S7[("US Neighborhoods<br/>Kaggle GeoJSON")] --> S8[("NYC Land Mask<br/>NYC Open Data NTA")]
     end
     
     subgraph Bronze["<b>🥉 Bronze Layer:</b> Raw Ingestion"]
@@ -56,15 +52,23 @@ flowchart TB
     
     subgraph Silver["<b>🥈 Silver Layer:</b> Spatial Transform + Land Mask"]
         ST[("Apache Sedona<br/>ST_Point, ST_GeomFromGeoJSON<br/>EPSG:4326")]
+        PANDAS[("Pandas<br/>Data Cleaning")]
         Mask[("Land Mask<br/>ST_Within Filter")]
         SDelta[("Delta Lake<br/>ACID Transactions")]
     end
     
     subgraph Gold["<b>🥇 Gold Layer:</b> Star Schema + AI + MLflow"]
         Ollama[("Ollama<br/>llama3.2:1b")]
+        AI[("AI Enrichment<br/>severity, hazard_type")]
         SJ[("Sedona Spatial Joins<br/>ST_Within, ST_Distance")]
         GF[("Gold Delta Tables<br/>Fact + Dimensions")]
-        MLflow[("MLflow<br/>Tracking & Registry")]
+        ML[("MLflow<br/>Tracking & Registry")]
+    end
+    
+    subgraph Training["🚀 ML Training"]
+        T[("train_healthcare_models.py<br/>5 Models")]
+        T --> ML
+        ML --> MR[("MLflow Registry<br/>Production Ready")]
     end
     
     subgraph Viz["🎨 Visualization"]
@@ -73,16 +77,42 @@ flowchart TB
     end
     
     Sources --> Bronze
-    Bronze --> ST
+    Bronze --> PANDAS
+    PANDAS --> ST
     ST --> Mask
     S8 -.->|Land mask<br/>filtering| Mask
     Mask --> SDelta
     SDelta --> Ollama
-    Ollama --> SJ
+    Ollama --> AI
+    AI --> SJ
     SJ --> GF
-    GF -.->|Model Tracking| MLflow
+    GF -.->|Model Tracking| ML
     GF --> WA
     GF --> B3D
+    T --> GF
+```
+
+### Medallion Layers
+
+```mermaid
+flowchart TB
+    subgraph BRONZE["<b>🥉 Bronze:</b> Raw Data"]
+        direction LR
+        B1[US Accidents CSV] ~~~ B2[USGS JSON] ~~~ B3[OSM GeoJSON] ~~~ B4[NYC 311] ~~~ B5[NYC Flights] ~~~ B6[NYC Weather] ~~~ B7[US Neighborhoods]
+    end
+
+    subgraph SILVER["<b>🥈 Silver:</b> Cleaned, Spatial, Enriched"]
+        direction LR
+        S1[Accidents + Geometry] ~~~ S2[Earthquakes + Geometry] ~~~ S3[Infrastructure + Geo] ~~~ S4[311 + Geo] ~~~ S5[Flights + Geo] ~~~ S6[Weather] ~~~ S7[Neighborhoods + Polygons]
+    end
+
+    subgraph GOLD["<b>🥇 Gold:</b> Star Schema + AI Insights"]
+        direction LR
+        G1[FACT_HAZARD_EVENTS] ~~~ G2[DIM_NEIGHBORHOODS] ~~~ G3[DIM_INFRASTRUCTURE] ~~~ G4[DIM_WEATHER] ~~~ G5[5 ML Models]
+    end
+
+    BRONZE -->|"Ingest"| SILVER
+    SILVER -->|"Transform"| GOLD
 ```
 
 ---
@@ -136,7 +166,7 @@ docker compose logs -f minio
 
 # Check health
 curl -s http://localhost:9900/minio/health/live
-curl -s http://localhost:5001/api/2.0/preview/mlflow/genesys
+curl -s http://localhost:5001/health
 curl -s http://localhost:3001/api/health
 ```
 
@@ -216,6 +246,7 @@ Data persists in Docker volumes:
 sequenceDiagram
     participant User
     participant Bronze as Bronze Ingestion
+    participant Sources as External APIs
     participant MinIO as MinIO Storage
     participant Spark as Spark Cluster
     participant Sedona as Apache Sedona
@@ -225,23 +256,25 @@ sequenceDiagram
     participant Gold as Gold Layer
     
     User->>Bronze: Run ingestion
-    Bronze->>MinIO: Upload raw data
+    Sources->>Bronze: USGSi Earthquakes, OSM Hospitals, NYC 311, Flights, Weather
+    Bronze->>MinIO: Upload raw data (Bronze Parquet)
+    
     OTel->>Spark: Trace pipeline execution
     
-    Bronze->>Spark: Trigger silver transform
-    Spark->>Sedona: Apply ST_Point, ST_Within (Land Mask)
+    Bronze->>Spark: Trigger silver transform (pandas + Sedona)
+    Spark->>Sedona: Apply ST_Point, ST_GeomFromGeoJSON, ST_Within (Land Mask)
     Sedona-->>Spark: Cleaned & Filtered DataFrames
     Spark->>MinIO: Write Silver Delta Tables
     
     Spark->>Gold: Trigger gold enrichment
-    Gold->>Ollama: Extract severity/hazard_type/flight_risk
+    Gold->>Ollama: Extract severity, hazard_type, flight_risk
     Ollama-->>Gold: JSON enrichment
     Gold->>Sedona: ST_Within, ST_Distance joins
-    Gold->>MLflow: Log Model Metrics/Run
+    Gold->>MLflow: Log metrics, register models
     Gold->>MinIO: Write Gold Delta Tables
     
     User->>Gold: Query results
-    User->>MLflow: Inspect Training Runs
+    User->>MLflow: Inspect training runs
 ```
 
 ### MLflow Model Training Flow
@@ -249,15 +282,23 @@ sequenceDiagram
 ```mermaid
 flowchart TB
     subgraph Training["🚀 Model Training & Tracking"]
-        D[("Gold Delta Tables")] -->|"Load"| T("Training Scripts<br/>train_aviation_models.py")
-        T -->|"Train"| M("Model (Scikit-Learn/XGBoost)")
-        M -->|"Log params, metrics, model"| ML("MLflow Tracking")
-        ML -->|"Register Version"| MR("MLflow Model Registry")
+        D[("Gold Delta Tables")] -->|"Load"| T("Training Scripts<br/>train_healthcare_models.py<br/>train_aviation_models.py")
+        T -->|"Train"| M1(Model 1: Fire Risk)
+        T --> M2(Model 2: Hospital Overpopulation)
+        T --> M3(Model 3: Emergency Response)
+        T --> M4(Model 4: Hospital Bed Demand)
+        T --> M5(Model 5: Ambulance Dispatch)
+        M1 --> ML[("MLflow Tracking<br/>localhost:5001")]
+        M2 --> ML
+        M3 --> ML
+        M4 --> ML
+        M5 --> ML
+        ML --> MR[("MLflow Registry<br/>5 Registered Models")]
     end
     
     subgraph Inference["🔮 Production Inference"]
         MR -->|"Deploy"| S("Inference Service")
-        S -->|"Score"| NewD("New Data")
+        S -->|"Score"| NewD("New Hazard Events")
     end
 ```
 
@@ -271,15 +312,17 @@ flowchart TD
     subgraph Frontend["🎨 Next.js (Client)"]
         UI["React / MapClient.tsx"]
         L["Leaflet.js<br/>Heatmap / Markers"]
+        M["ML Predictions<br/>from Gold Layer"]
     end
     
     subgraph Backend["⚙️ Pipeline Data"]
-        API["/public/data/heatmap.geojson"]
+        API["/public/data/*.geojson"]
     end
     
     User --> UI
     UI --> L
-    L -- "Fetch" --> API
+    L --> M
+    M -- "Query Gold" --> API
 ```
 
 ---
@@ -327,36 +370,136 @@ docker compose up -d
 # 4. Verify services
 ./scripts/run_pipeline.sh status
 
-# 5. Run ingestion (Bronze)
+# 5. Run ingestion (Bronze) - all 8 data sources
 python src/bronze_ingestion.py
 
-# 6. Run Silver transform
+# 6. Run Silver transforms (pandas + Sedona)
+spark-submit src/silver_pandas_transform.py
 spark-submit src/silver_sedona_transform.py
 
-# 7. Run Gold enrichment & Model training
-spark-submit src/gold_schema_and_ai_enrichment.py
+# 7. Run Gold enrichment
+spark-submit src/gold_dimensional_modeling.py
+
+# 8. Train ML models
+python src/train_healthcare_models.py
 python src/train_aviation_models.py
+
+# 9. Run full pipeline
+python src/run_pipeline.py
 ```
 
 ---
 
 ## Pipeline Components
 
-### 1. Bronze Layer (Ingestion)
+### 1. Bronze Layer (Raw Data Ingestion)
 
 **File:** `src/bronze_ingestion.py`
 
-### 2. Silver Layer (Spatial Transform + Land Masking)
+Ingests raw data from 8 external sources into MinIO Bronze layer:
 
+| Source | API | Format |
+|--------|-----|-------|
+| US Accidents | Kaggle CSV | CSV |
+| USGS Earthquakes | USGS FDSN API | JSON (GeoJSON) |
+| OSM Infrastructure | Overpass API | XML → JSON |
+| NYC 311 | Socrata API | JSON |
+| NYC Flights | OpenSky Network API | JSON |
+| NYC Weather | NOAA NWS API | JSON |
+| US Neighborhoods | Kaggle GeoJSON | GeoJSON |
+| NYC Land Mask | NYC Open Data NTA | GeoJSON |
+
+**Execution:**
+```bash
+python src/bronze_ingestion.py
+```
+
+### 2. Silver Layer (Cleaned + Spatial Transform)
+
+Two-step transformation:
+
+#### Step 1: Pandas Cleaning
+**File:** `src/silver_pandas_transform.py`
+
+Cleans, deduplicates, handles missing values.
+
+```bash
+spark-submit src/silver_pandas_transform.py
+```
+
+#### Step 2: Sedona Spatial
 **File:** `src/silver_sedona_transform.py`
 
-### 3. Gold Layer (AI + Spatial Joins + MLflow)
+Applies spatial operations:
+- `ST_Point()` - Creates geometries from lat/lon
+- `ST_GeomFromGeoJSON()` - Parses GeoJSON
+- `ST_Within()` - Land mask filtering (NYCNTA boundary)
+- `ST_Distance()` - Proximity calculations
+- `ST_Buffer()` - Service area buffers
 
-**File:** `src/gold_schema_and_ai_enrichment.py`
+```bash
+spark-submit src/silver_sedona_transform.py
+```
 
-### 4. Training (MLflow)
+### 3. Gold Layer (Star Schema + AI Enrichment)
 
+**File:** `src/gold_dimensional_modeling.py`
+
+Creates dimensional star schema:
+
+| Table | Type | Description |
+|-------|------|------------|
+| `fact_hazard_events` | Fact | Combined hazard events with AI-enriched labels |
+| `dim_neighborhoods` | Dimension | NYC neighborhoods with risk scores |
+| `dim_infrastructure` | Dimension | Hospitals, fire stations, EMS |
+| `dim_weather` | Dimension | Weather conditions |
+
+AI Enrichment via Ollama:
+- `severity`: Critical, High, Medium, Low
+- `hazard_type`: Fire, Medical, Weather, Infrastructure
+- `flight_risk`: High, Medium, Low
+
+```bash
+spark-submit src/gold_dimensional_modeling.py
+```
+
+### 4. ML Training
+
+#### Healthcare Models
+**File:** `src/train_healthcare_models.py`
+
+Trains 5 supervised models:
+
+| Model | Task | Algorithm | Target |
+|-------|------|----------|--------|
+| NYC Fire Risk Model | Classification | Fire probability |
+| Hospital Overpopulation | Classification | Overcapacity |
+| Emergency Response | Regression | Response time |
+| Hospital Bed Demand | Regression | Bed shortage |
+| Ambulance Dispatch | Classification | Dispatch optimization |
+
+```bash
+python src/train_healthcare_models.py
+```
+
+#### Aviation Models
 **File:** `src/train_aviation_models.py`
+
+Flight delay prediction models.
+
+```bash
+python src/train_aviation_models.py
+```
+
+### 5. Full Pipeline Orchestration
+
+**File:** `src/run_pipeline.py`
+
+Runs complete Bronze → Silver → Gold pipeline:
+
+```bash
+python src/run_pipeline.py
+```
 
 ---
 
@@ -364,17 +507,39 @@ python src/train_aviation_models.py
 
 ```mermaid
 block-beta
-columns 13 
+columns 30
 
-space:4 L3["🔴 L3: End-to-End<br/>Full Pipeline"]:5 space:4
-space:3 L2["🟠 L2: Integration Services<br/>Real Services / Local Docker"]:7 space:3
-space:1 L1["🟡 L1: Unit with Mocks<br/>Mocked Dependencies / Partial Mocks"]:11 space:1
-L0["🟢 L0: Unit Isolation (Most Tests)<br/>Pure Functions / No I/O / No Dependencies"]:13
+space:9 L3["🔴 L3: End-to-End<br/>Full Pipeline"]:12 space:9
+space:6 L2["🟠 L2: Integration Services<br/>Real Services / Local Docker<br/>(MinIO, MLflow, Prometheus)"]:18 space:6
+space:3 L1["🟡 L1: Unit with Mocks<br/>Mocked Dependencies<br/>(USGS, OSM, NYC311 APIs)"]:24 space:3
+L0["🟢 L0: Unit Isolation<br/>Pure Functions / No I/O"]:30
 
 style L3 fill:#ff5722,color:#fff,stroke:#333,stroke-width:2px
 style L2 fill:#ff9800,color:#fff,stroke:#333,stroke-width:2px
 style L1 fill:#ffc107,color:#000,stroke:#333,stroke-width:2px
 style L0 fill:#ffeb3b,color:#000,stroke:#333,stroke-width:2px
+```
+
+### Test Results
+
+```bash
+# Run all tests
+pytest
+
+# Run L0 unit tests only
+pytest tests/test_l0_*.py
+
+# Run L1 integration tests
+pytest tests/test_l1_*.py
+
+# Run L2 component tests
+pytest tests/test_l2_*.py
+
+# Run L3 E2E tests
+pytest tests/test_l3_*.py
+
+# Result: 102 passed, 14 warnings
+# No skipped tests - per Constitution rule
 ```
 
 ---
@@ -390,6 +555,12 @@ Automates 3D data visualization from Gold layer Parquet files. Uses Python API w
 blender -b examples/nyc_ml_heatmap.blend -P scripts/render_flight_simulation.py
 ```
 
+**Features:**
+- Procedural building generation from NYC GeoJSON
+- Flight path visualization
+- Heatmap coloring by ML risk scores
+- Real-time camera animation
+
 ---
 
 ## Heatmap Visualization
@@ -397,6 +568,36 @@ blender -b examples/nyc_ml_heatmap.blend -P scripts/render_flight_simulation.py
 **File:** `scripts/quick_heatmap.py`
 
 Reads gold layer parquet files and generates a Leaflet heatmap.
+
+```bash
+python scripts/quick_heatmap.py
+```
+
+Output: `public/data/heatmap.geojson`
+
+---
+
+## Deployment
+
+### Docker Production Build
+
+```bash
+# Build all images
+docker compose build
+
+# Scale Spark workers
+docker compose up -d --scale spark-worker=3
+
+# Enable MLflow registry
+docker compose up -d mlflow-server
+```
+
+### K8s (Future)
+
+```bash
+# Deploy to Kubernetes
+kubectl apply -f k8s/
+```
 
 ---
 
@@ -408,7 +609,53 @@ Reads gold layer parquet files and generates a Leaflet heatmap.
 | Ollama API timeout | Increase `OLLAMA_TIMEOUT` |
 | Sedona functions not found | Ensure Sedona plugin registered |
 | Missing telemetry data | Ensure OpenTelemetry collector is running |
-| MLflow not tracking | Check `MLFLOW_TRACKING_URI` environment variable |
+| MLflow not tracking | Check `MLFLOW_TRACKING_URI` |
+| OSM API 406 error | Add `User-Agent: curl/8.7.1` header |
+| Java 25 incompatible | Use `openjdk@17` for Spark |
+
+### Service Health Checks
+
+```bash
+# MinIO
+curl -s http://localhost:9900/minio/health/live
+
+# MLflow
+curl -s http://localhost:5001/health
+
+# Grafana
+curl -s http://localhost:3001/api/health
+
+# PostgreSQL
+docker compose exec postgres pg_isready -U postgres
+
+# Spark
+curl -s http://localhost:9080
+```
+
+---
+
+## API References
+
+### External APIs
+
+| API | Endpoint | Documentation |
+|-----|---------|-------------|
+| USGS | https://earthquake.usgs.gov/fdsnws/event/1/query | USGS Docs |
+| OSM Overpass | https://overpass-api.de/api/interpreter | OSM Docs |
+| NYC 311 | https://data.cityofnewyork.us/resource/fhrw-4uyv.json | NYC Open Data |
+| NYC Flights | https://opensky-network.org/api/states/all | OpenSky API |
+| NOAA Weather | https://api.weather.gov | NWS API |
+
+### Internal APIs
+
+| Service | Endpoint |
+|--------|----------|
+| Spark Master | spark://localhost:7077 |
+| Spark UI | http://localhost:9090 |
+| MinIO Console | http://localhost:9900 |
+| MLflow | http://localhost:5001 |
+| Grafana | http://localhost:3001 |
+| Next.js | http://localhost:3000 |
 
 ---
 
@@ -420,6 +667,11 @@ Reads gold layer parquet files and generates a Leaflet heatmap.
 - [OpenTelemetry](https://opentelemetry.io/) - Observability framework
 - [MLflow](https://mlflow.org/) - MLOps platform
 - [Blender](https://www.blender.org/) - 3D Content Creation
+- [USGS](https://earthquake.usgs.gov/) - Earthquake data
+- [OpenStreetMap](https://www.openstreetmap.org/) - Infrastructure data
+- [NYC Open Data](https://data.cityofnewyork.us/) - NYC municipal data
+- [OpenSky Network](https://opensky-network.org/) - Aviation data
+- [NOAA NWS](https://www.weather.gov/) - Weather data
 
 ---
 
