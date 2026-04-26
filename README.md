@@ -359,20 +359,14 @@ flowchart TD
 
 ### Tech Stack Details
 
-```mermaid
-flowchart LR
-    subgraph Frontend
-        A[Next.js 14<br/>App Router] --> B[React 18<br/>Hooks]
-        B --> C[State<br/>Management]
-        C --> D[Leaflet.js<br/>1.9]
-        D --> E[CARTO<br/>Tiles]
-        D --> F[Three.js<br/>WebGL]
-    end
-    
-    Style A fill:#000,color:#fff
-    Style B fill:#61dafb,color:#000
-    Style D fill:#2ecc71,color:#000
-    Style F fill:#f39c12,color:#000
+```
+Frontend Stack:
+├── Next.js 14 (App Router with SSR)
+├── React 18 (Hooks + Concurrent Mode)
+├── State Management
+├── Leaflet.js 1.9 (Interactive Maps)
+├── CARTO Basemap Tiles
+└── Three.js (WebGL 3D Rendering)
 ```
 
 ### Running the Web App
