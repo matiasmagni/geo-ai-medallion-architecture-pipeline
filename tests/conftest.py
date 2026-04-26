@@ -30,50 +30,39 @@ logger = logging.getLogger(__name__)
 
 @pytest.fixture(scope="session")
 def real_api_data() -> Dict[str, Any]:
-    """
-    Fetch REAL data from all external APIs.
-    Session-scoped - fetched once per test session.
-    """
+    """Fetch REAL data from all external APIs. FAILS if external API is unavailable."""
     data = {}
     
-    try:
-        params = {
-            "format": "geojson",
-            "starttime": "2024-01-01",
-            "endtime": "2024-12-31",
-            "minlatitude": 40.5,
-            "maxlatitude": 41.0,
-            "minlongitude": -74.3,
-            "maxlongitude": -73.7,
-            "minmagnitude": 1.0
-        }
-        r = requests.get("https://earthquake.usgs.gov/fdsnws/event/1/query", params=params, timeout=30)
-        r.raise_for_status()
-        data["usgs"] = r.json()
-        logger.info(f"conftest: USGS API returned {len(data['usgs'].get('features', []))} earthquakes")
-    except Exception as e:
-        logger.error(f"conftest: USGS API failed: {e}")
-        data["usgs"] = None
+    # USGS
+    params = {
+        "format": "geojson",
+        "starttime": "2024-01-01",
+        "endtime": "2024-12-31",
+        "minlatitude": 40.5,
+        "maxlatitude": 41.0,
+        "minlongitude": -74.3,
+        "maxlongitude": -73.7,
+        "minmagnitude": 1.0
+    }
+    r = requests.get("https://earthquake.usgs.gov/fdsnws/event/1/query", params=params, timeout=30)
+    r.raise_for_status()
+    data["usgs"] = r.json()
+    logger.info(f"conftest: USGS returned {len(data['usgs'].get('features', []))} earthquakes")
     
-    try:
-        query = """[out:json][timeout:30];node["amenity"~"hospital|fire_station"](40.7,-74.02,40.8,-73.9);out;"""
-        r = requests.post("https://overpass-api.de/api/interpreter", data={'data': query}, timeout=30)
-        r.raise_for_status()
-        data["osm"] = r.json()
-        logger.info(f"conftest: OSM API returned {len(data['osm'].get('elements', []))} facilities")
-    except Exception as e:
-        logger.error(f"conftest: OSM API failed: {e}")
-        data["osm"] = None
+    # OSM - requires User-Agent like curl
+    query_data = 'data=[out:json][timeout:30];node[amenity=hospital](40.7,-74.02,40.8,-73.9);out;'
+    r = requests.post("https://overpass-api.de/api/interpreter", data=query_data, 
+                     headers={"User-Agent": "curl/8.7.1"}, timeout=30)
+    r.raise_for_status()
+    data["osm"] = r.json()
+    logger.info(f"conftest: OSM returned {len(data['osm'].get('elements', []))} facilities")
     
-    try:
-        params = {"$limit": 100, "$where": "latitude IS NOT NULL"}
-        r = requests.get("https://data.cityofnewyork.us/resource/fhrw-4uyv.json", params=params, timeout=30)
-        r.raise_for_status()
-        data["nyc311"] = r.json()
-        logger.info(f"conftest: NYC 311 API returned {len(data['nyc311'])} records")
-    except Exception as e:
-        logger.error(f"conftest: NYC 311 API failed: {e}")
-        data["nyc311"] = None
+    # NYC 311
+    params = {"$limit": 100, "$where": "latitude IS NOT NULL"}
+    r = requests.get("https://data.cityofnewyork.us/resource/fhrw-4uyv.json", params=params, timeout=30)
+    r.raise_for_status()
+    data["nyc311"] = r.json()
+    logger.info(f"conftest: NYC 311 returned {len(data['nyc311'])} records")
     
     return data
 

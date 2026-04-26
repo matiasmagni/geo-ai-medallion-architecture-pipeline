@@ -273,25 +273,16 @@ class TestRealAPIIntegration:
 
     def test_usgs_api_reachable(self, real_api_data):
         """Test USGS earthquake API is reachable."""
-        if real_api_data.get("usgs") is None:
-            pytest.skip("USGS API not available")
-        
         assert "features" in real_api_data["usgs"]
         logger.info(f"L1: USGS features count: {len(real_api_data['usgs']['features'])}")
 
     def test_osm_api_reachable(self, real_api_data):
         """Test OSM API is reachable."""
-        if real_api_data.get("osm") is None:
-            pytest.skip("OSM API not available")
-        
         assert "elements" in real_api_data["osm"]
         logger.info(f"L1: OSM elements count: {len(real_api_data['osm']['elements'])}")
 
     def test_nyc311_api_reachable(self, real_api_data):
         """Test NYC 311 API is reachable."""
-        if real_api_data.get("nyc311") is None:
-            pytest.skip("NYC 311 API not available")
-        
         assert len(real_api_data["nyc311"]) > 0
         logger.info(f"L1: NYC 311 records count: {len(real_api_data['nyc311'])}")
 
