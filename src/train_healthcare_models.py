@@ -4,6 +4,7 @@ NYC Healthcare/Fire ML Pipeline - Real Data Training
 Trains 5 ML models on REAL ingested NYC data and registers them in MLflow.
 """
 
+import os
 import logging
 import warnings
 import numpy as np

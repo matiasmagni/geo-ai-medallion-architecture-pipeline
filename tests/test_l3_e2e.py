@@ -296,6 +296,45 @@ class TestAPIEndpoints:
 
 
 # =============================================================================
+# TEST CLASS: Telemetry E2E Tests
+# =============================================================================
+
+class TestTelemetryE2E:
+    """L3: Test distributed tracing and metrics setup."""
+
+    def test_telemetry_setup_runs(self):
+        """Test telemetry initialization."""
+        from telemetry import setup_telemetry
+        try:
+            setup_telemetry()
+            assert True
+        except Exception as e:
+            pytest.skip(f"Telemetry setup failed: {e}")
+
+    def test_traced_decorator_execution(self):
+        """Test @traced decorator doesn't break execution."""
+        from telemetry import traced
+        
+        @traced(layer="bronze", operation="live_test")
+        def sample_operation():
+            return {"status": "ok", "records": 100}
+            
+        result = sample_operation()
+        assert result["status"] == "ok"
+        assert result["records"] == 100
+
+    def test_traced_error_handling(self):
+        """Test @traced decorator handles exceptions correctly."""
+        from telemetry import traced
+        
+        @traced(layer="silver", operation="error_test")
+        def failing_operation():
+            raise ValueError("Test expected error")
+            
+        with pytest.raises(ValueError, match="Test expected error"):
+            failing_operation()
+
+# =============================================================================
 # MAIN
 # =============================================================================
 

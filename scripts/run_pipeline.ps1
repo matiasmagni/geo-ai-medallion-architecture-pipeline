@@ -141,7 +141,7 @@ function Cmd-Gold {
     }
     
     # Run the Gold pipeline
-    Invoke-DockerCompose @("exec", "-T", "spark-master", "spark-submit", "--master", "spark://spark-master:7077", "--deploy-mode", "cluster", "--conf", "spark.driver.memory=4g", "--conf", "spark.executor.memory=4g", "/src/gold_ai_enrichment.py") + $Args
+    Invoke-DockerCompose @("exec", "-T", "spark-master", "spark-submit", "--master", "spark://spark-master:7077", "--deploy-mode", "cluster", "--conf", "spark.driver.memory=4g", "--conf", "spark.executor.memory=4g", "/src/gold_dimensional_modeling.py") + $Args
     
     Write-Success "Gold pipeline complete!"
 }

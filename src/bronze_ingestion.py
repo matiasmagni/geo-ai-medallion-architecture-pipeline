@@ -25,6 +25,8 @@ import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+import boto3
+from botocore.client import Config as BotoConfig
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -36,7 +38,7 @@ class Config:
     MINIO_ENDPOINT: str = os.getenv("S3_ENDPOINT", "http://localhost:9000")
     MINIO_ACCESS_KEY: str = os.getenv("AWS_ACCESS_KEY_ID", "minioadmin")
     MINIO_SECRET_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin123")
-    BRONZE_BUCKET: str = os.getenv("BRONZE_BUCKET", "geo-lakehouse/bronze")
+    BRONZE_BUCKET: str = os.getenv("BRONZE_BUCKET", "geoai-bronze")
     
     USGS_API_URL: str = "https://earthquake.usgs.gov/fdsnws/event/1/query"
     OSM_API_URL: str = "https://overpass-api.de/api/interpreter"
@@ -54,9 +56,41 @@ class Config:
     LOCAL_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def get_s3_client():
+    """Create a real S3 client for MinIO."""
+    return boto3.client(
+        "s3",
+        endpoint_url=Config.MINIO_ENDPOINT,
+        aws_access_key_id=Config.MINIO_ACCESS_KEY,
+        aws_secret_access_key=Config.MINIO_SECRET_KEY,
+        config=BotoConfig(signature_version="s3v4"),
+        region_name="us-east-1"
+    )
+
+
 def upload_to_bronze(local_path: Path, s3_key: str, format: str = "parquet") -> bool:
-    """Verify local file exists."""
-    return local_path.exists()
+    """Upload local file to MinIO Bronze bucket."""
+    if not local_path.exists():
+        logger.error(f"Local file {local_path} does not exist")
+        return False
+        
+    try:
+        s3 = get_s3_client()
+        
+        # Ensure bucket exists
+        bucket_name = Config.BRONZE_BUCKET.split("/")[-1] if "/" in Config.BRONZE_BUCKET else Config.BRONZE_BUCKET
+        try:
+            s3.head_bucket(Bucket=bucket_name)
+        except:
+            logger.info(f"Creating bucket {bucket_name}")
+            s3.create_bucket(Bucket=bucket_name)
+            
+        s3.upload_file(str(local_path), bucket_name, s3_key)
+        logger.info(f"Successfully uploaded {local_path} to s3://{bucket_name}/{s3_key}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to upload to MinIO: {e}")
+        return False
 
 
 def fetch_usgs_earthquakes(output_dir: Path) -> pd.DataFrame:

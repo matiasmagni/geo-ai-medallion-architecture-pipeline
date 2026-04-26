@@ -98,6 +98,35 @@ class TestConfigValidation:
         assert hasattr(Config, 'LOCAL_DATA_DIR')
         assert isinstance(Config.LOCAL_DATA_DIR, Path)
 
+class TestGoldConfigValidation:
+    """L0: Gold layer configuration validation tests."""
+
+    def test_gold_config_defaults(self):
+        """Test Gold Config defaults."""
+        from gold_dimensional_modeling import Config
+        config = Config()
+        
+        assert config.SILVER_BUCKET == "geo-lakehouse/silver"
+        assert config.GOLD_BUCKET == "geo-lakehouse/gold"
+        assert config.APP_NAME == "GeoAI_Gold_Dimensional"
+        assert config.DELTA_COMPRESSION == "snappy"
+
+    def test_gold_config_env_override(self):
+        """Test Gold Config environment overrides."""
+        os.environ['GOLD_BUCKET'] = 'custom-gold'
+        
+        # Reload to pick up env change
+        import importlib
+        import gold_dimensional_modeling
+        importlib.reload(gold_dimensional_modeling)
+        from gold_dimensional_modeling import Config
+        
+        config = Config()
+        assert config.GOLD_BUCKET == 'custom-gold'
+        
+        # Cleanup
+        os.environ.pop('GOLD_BUCKET', None)
+
 
 # =============================================================================
 # TEST CLASS: Geometry Helpers
@@ -579,6 +608,91 @@ class TestLoggingConfiguration:
         assert "%(asctime)s" in formatter._fmt
         assert "%(message)s" in formatter._fmt
 
+
+class TestSilverEnrichmentUnit:
+    """L0: Silver enrichment unit tests."""
+    def test_silver_config_defaults(self):
+        """L0-T001: Silver config has correct defaults."""
+        from silver_enrichment import Config
+
+        c = Config()
+        assert c.SILVER_BUCKET == "geoai-silver"
+        assert "11434" in c.OLLAMA_BASE_URL
+
+    def test_silver_ollama_config(self):
+        """L0-T002: Ollama settings configured."""
+        from silver_enrichment import Config
+
+        c = Config()
+        assert hasattr(c, "OLLAMA_BASE_URL")
+        assert hasattr(c, "OLLAMA_MODEL")
+        assert c.OLLAMA_TIMEOUT > 0
+
+    def test_parse_valid_ai_enrichment(self):
+        """L0-T010: Parse valid AI enrichment JSON."""
+        from silver_enrichment import parse_ai_enrichment
+
+        result = parse_ai_enrichment('{"severity": 8, "hazard_type": "traffic"}')
+        assert result["ai_severity"] == 8
+        assert result["ai_hazard_type"] == "traffic"
+
+    def test_parse_ai_enrichment_logic(self):
+        """L0-T011: Handle invalid JSON gracefully."""
+        from silver_enrichment import parse_ai_enrichment
+        res = parse_ai_enrichment("not_json")
+        assert res == {'ai_severity': 5, 'ai_hazard_type': 'unknown'}
+
+    def test_parse_malformed_severity(self):
+        """L0-T012: Handle malformed severity."""
+        from silver_enrichment import parse_ai_enrichment
+        result = parse_ai_enrichment('{"severity": "high", "hazard_type": "traffic"}')
+        assert result["ai_severity"] == 5
+
+    def test_parse_severity_bounds(self):
+        """L0-T013: Handle severity bounds."""
+        from silver_enrichment import parse_ai_enrichment
+        result = parse_ai_enrichment('{"severity": 15, "hazard_type": "fire"}')
+        assert result["ai_severity"] <= 10
+        result = parse_ai_enrichment('{"severity": 0, "hazard_type": "fire"}')
+        assert result["ai_severity"] >= 1
+
+    def test_ai_enrichment_udf_creation(self):
+        from silver_enrichment import create_ollama_enrichment_udf, Config
+        config = Config()
+        config.OLLAMA_BASE_URL = "http://localhost:11434"
+        udf = create_ollama_enrichment_udf(config)
+        assert udf is not None
+
+class TestSilverSpatialUnit:
+    """L0: Silver spatial unit tests."""
+    def test_spatial_logic_imports(self):
+        from silver_sedona_transform import create_geometry_from_latlon, parse_geojson_geometry
+        from silver_spatial_transform import create_spark_session, read_bronze_data
+        assert create_geometry_from_latlon is not None
+        assert parse_geojson_geometry is not None
+        assert create_spark_session is not None
+        assert read_bronze_data is not None
+
+class TestTelemetryUnit:
+    """L0: Telemetry unit tests."""
+    def test_telemetry_exists(self):
+        from telemetry import get_tracer, setup_telemetry
+        assert get_tracer() is not None
+        assert setup_telemetry is not None
+
+    def test_traced_exception_handling(self):
+        from telemetry import traced
+        @traced("test", "test_op")
+        def fail_func():
+            raise ValueError("test error")
+        with pytest.raises(ValueError):
+            fail_func()
+
+class TestAviationUnit:
+    """L0: Aviation module unit tests."""
+    def test_aviation_imports(self):
+        from train_aviation_models import train_all_models
+        assert train_all_models is not None
 
 # =============================================================================
 # MAIN

@@ -174,7 +174,7 @@ cmd_gold() {
         --deploy-mode cluster \
         --conf spark.driver.memory=4g \
         --conf spark.executor.memory=4g \
-        /src/gold_ai_enrichment.py "$@"
+        /src/gold_dimensional_modeling.py "$@"
     
     success "Gold pipeline complete!"
 }

@@ -38,6 +38,8 @@ services:
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin123
       S3_ENDPOINT: http://minio:9000
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-arm64
+    command: ["sh", "-c", "chmod +x /start-spark.sh && /start-spark.sh"]
     ports:
       - "9077:7077"
       - "9080:8080"
@@ -45,6 +47,7 @@ services:
     volumes:
       - ./src:/home/jovyan/src
       - ./tests:/home/jovyan/tests
+      - ./start-spark.sh:/start-spark.sh
     networks:
       - geoai-network
     depends_on:
@@ -110,6 +113,9 @@ services:
       - MLFLOW_S3_ENDPOINT_URL=http://geoai-minio:9000
     networks:
       - geoai-network
+    depends_on:
+      - postgres
+      - minio
 
   # =========================================================================
   # METRICS EXPORTER - Separate Prometheus metrics
@@ -148,6 +154,8 @@ services:
       - '--web.console.templates=/etc/prometheus/consoles'
     networks:
       - geoai-network
+    depends_on:
+      - metrics-exporter
 
   # =========================================================================
   # GRAFANA - Visualization

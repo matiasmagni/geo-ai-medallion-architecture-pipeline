@@ -66,7 +66,7 @@ class Config:
     """
     Configuration for Silver layer transformation.
 
-    IMPORTANT: Delta Lake tables stored at s3a://geo-lakehouse/silver/
+    IMPORTANT: Delta Lake tables stored at s3a://geoai-silver/
     """
 
     # MinIO/S3 Configuration
@@ -75,11 +75,11 @@ class Config:
     MINIO_SECRET_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin123")
 
     # Bucket paths
-    BRONZE_BUCKET: str = os.getenv("BRONZE_BUCKET", "geo-lakehouse/bronze")
-    SILVER_BUCKET: str = os.getenv("SILVER_BUCKET", "geo-lakehouse/silver")
+    BRONZE_BUCKET: str = os.getenv("BRONZE_BUCKET", "geoai-bronze")
+    SILVER_BUCKET: str = os.getenv("SILVER_BUCKET", "geoai-silver")
 
     # Ollama Configuration (Local LLM)
-    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
+    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3")
     OLLAMA_TIMEOUT: int = int(os.getenv("OLLAMA_TIMEOUT", "60"))
 
@@ -102,54 +102,36 @@ class Config:
 
 def create_spark_session(config: Config) -> SparkSession:
     """
-    Create SparkSession with Sedona and Delta Lake support.
-
-    Key Dependencies:
-    - org.apache.sedona:sedona-python-adapter-3.4_2.12
-    - io.delta:delta-spark_2.12:2.4.0
-
-    Parameters
-    ----------
-    config : Config
-        Configuration object
-
-    Returns
-    -------
-    SparkSession
-        Configured Spark session
+    Create SparkSession with Sedona, Delta Lake, and S3A support.
     """
-    builder = (
-        SparkSession.builder.appName(config.APP_NAME)
-        .master(config.SPARK_MASTER)
-        .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-        .config(
-            "spark.kryo.registrator",
-            "org.apache.sedona.core.sedona.SedonaKryoRegistrator",
-        )
-        .config("spark.sql.adaptive.enabled", "true")
-        .config("spark.sql.adaptive.coalescePartitions.enabled", "true")
-    )
-
-    # Try to add Sedona packages (may not be in environment)
-    try:
-        builder = builder.config(
-            "spark.jars.packages",
-            "org.apache.sedona:sedona-python-adapter-3.4_2.12:1.4.1",
-        )
-    except Exception:
-        logger.warning("Could not add Sedona packages - may not be installed")
-
-    spark = builder.getOrCreate()
-
-    # Initialize Sedona context so ST_* functions are registered
+    from pyspark import SparkConf
+    
+    conf = SparkConf()
+    conf.setAppName(config.APP_NAME)
+    conf.setMaster(config.SPARK_MASTER)
+    
+    # Sedona Configuration
+    conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+    conf.set("spark.kryo.registrator", "org.apache.sedona.core.sedona.SedonaKryoRegistrator")
+    
+    # MinIO / S3A Configuration
+    conf.set("spark.hadoop.fs.s3a.endpoint", config.MINIO_ENDPOINT)
+    conf.set("spark.hadoop.fs.s3a.access.key", config.MINIO_ACCESS_KEY)
+    conf.set("spark.hadoop.fs.s3a.secret.key", config.MINIO_SECRET_KEY)
+    conf.set("spark.hadoop.fs.s3a.path.style.access", "true")
+    conf.set("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+    
+    # Build Session
+    spark = SparkSession.builder.config(conf=conf).getOrCreate()
+    
+    # Initialize Sedona
     try:
         from sedona.spark import SedonaContext
         SedonaContext.create(spark)
-        logger.info("Sedona context initialized — ST_* spatial functions available")
+        logger.info("Sedona context initialized")
     except ImportError:
-        logger.warning("Sedona not installed — spatial functions disabled")
-    except Exception as e:
-        logger.warning(f"Sedona initialization failed: {e}")
+        logger.warning("Sedona not installed")
+        
 
     return spark
 
@@ -544,13 +526,12 @@ Valid hazard_types: traffic, pedestrian, infrastructure, noise, environmental, m
                     )
 
             except Exception as e:
-                logger.warning(f"Ollama call failed: {e}")
-                results.append(json.dumps({"severity": 5, "hazard_type": "error"}))
+                        logger.warning(f"Ollama call failed: {e}")
+                        results.append(json.dumps({"severity": 5, "hazard_type": "error"}))
 
         return pd.Series(results)
 
     return ollama_enrichment
-
 
 def parse_ai_enrichment(json_str: str) -> Dict[str, Any]:
     """
@@ -559,12 +540,12 @@ def parse_ai_enrichment(json_str: str) -> Dict[str, Any]:
     Parameters
     ----------
     json_str : str
-        JSON string from LLM
+    JSON string from LLM
 
     Returns
     -------
     dict
-        Parsed result with severity and hazard_type
+    Parsed result with severity and hazard_type
     """
     try:
         data = json.loads(json_str)
@@ -580,13 +561,14 @@ def parse_ai_enrichment(json_str: str) -> Dict[str, Any]:
             "ai_severity": severity,
             "ai_hazard_type": data.get("hazard_type", "unknown"),
         }
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to parse AI enrichment JSON: {e}")
         return {"ai_severity": 5, "ai_hazard_type": "unknown"}
 
 
-# =============================================================================
-# READ BRONZE DATA
-# =============================================================================
+            # =============================================================================
+            # READ BRONZE DATA
+            # =============================================================================
 
 
 def read_bronze_table(spark: SparkSession, source: str) -> DataFrame:

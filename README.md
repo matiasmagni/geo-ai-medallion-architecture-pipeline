@@ -19,9 +19,10 @@ A production-ready **Local Databricks Clone** for GeoAI portfolio projects using
 
 1. [Architecture Overview](#architecture-overview)
 2. [Tech Stack](#tech-stack)
-3. [Data & Model Flow](#data-and-model-flow)
-4. [Web App Architecture](#web-app-architecture)
-5. [Getting Started](#getting-started)
+3. [Infrastructure](#infrastructure)
+4. [Data & Model Flow](#data-and-model-flow)
+5. [Web App Architecture](#web-app-architecture)
+6. [Getting Started](#getting-started)
 6. [Pipeline Components](#pipeline-components)
 7. [Testing Pyramid](#testing-pyramid)
 8. [Blender 3D Integration](#blender-3d-integration)
@@ -83,6 +84,127 @@ flowchart TB
     GF --> WA
     GF --> B3D
 ```
+
+---
+
+## Infrastructure
+
+### Docker Containers Architecture
+
+The pipeline runs entirely in Docker containers orchestrated via `docker-compose.yml`:
+
+```mermaid
+graph TD
+    subgraph Host["Host Machine (Docker Engine)"]
+        direction TB
+        Spark("Spark Master<br/>:9080")
+        MinIO("MinIO<br/>:9900 :9901")
+        Postgres("PostgreSQL<br/>:5434")
+        Ollama("Ollama<br/>:11434")
+        OTel("OTel Collector<br/>:4317 :4318")
+        MLflow("MLflow<br/>:5001")
+        Web("Next.js<br/>:3000")
+        Grafana("Grafana<br/>:3001 :3002")
+    end
+```
+
+### Service Details
+
+| Service | Port | Image | Purpose |
+|---------|------|-------|---------|
+| **Spark Master** | 9080 | bitnami/spark:3.5 | Distributed compute engine |
+| **MinIO** | 9900/9901 | minio/minio | S3-compatible object storage |
+| **PostgreSQL** | 5434 | postgres:15 | Hive metastore + MLflow backend |
+| **Ollama** | 11434 | ollama/ollama | Local LLM inference |
+| **OTel Collector** | 4317/4318 | otel/opentelemetry-collector | Metrics & traces |
+| **MLflow** | 5001 | mlflow/mlflow | Experiment tracking |
+| **Next.js** | 3000 | node:20-alpine | Web app frontend |
+| **Grafana** | 3001/3002 | grafana/grafana | Dashboards & visualization |
+
+### Quick Start
+
+```bash
+# Start all infrastructure
+docker compose up -d
+
+# Verify services
+docker compose ps
+
+# View logs
+docker compose logs -f spark
+docker compose logs -f minio
+
+# Check health
+curl -s http://localhost:9900/minio/health/live
+curl -s http://localhost:5001/api/2.0/preview/mlflow/genesys
+curl -s http://localhost:3001/api/health
+```
+
+### Individual Service Access
+
+```bash
+# MinIO Console (admin / minio123)
+http://localhost:9900
+
+# MLflow
+http://localhost:5001
+
+# Grafana (admin / admin)
+http://localhost:3001
+
+# Next.js Web App
+http://localhost:3000
+```
+
+### Environment Variables
+
+```bash
+# .env.example
+MINIO_ROOT_USER=admin
+MINIO_ROOT_PASSWORD=minio123
+POSTGRES_PASSWORD=postgres
+MLFLOW_TRACKING_URI=http://localhost:5001
+SPARK_MASTER=spark://localhost:7077
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+### Stopping and Cleanup
+
+```bash
+# Stop services
+docker compose down
+
+# Stop and remove volumes
+docker compose down -v
+
+# Remove all containers, volumes, and images
+docker compose down --rmi all -v
+```
+
+### Troubleshooting
+
+```bash
+# Check container status
+docker compose ps -a
+
+# Restart a specific service
+docker compose restart spark
+
+# View service logs
+docker compose logs --tail=100 spark
+
+# Shell into a container
+docker compose exec spark bash
+docker compose exec minio sh
+```
+
+### Data Persistence
+
+Data persists in Docker volumes:
+
+- `postgres_data` - PostgreSQL database
+- `minio_data` - MinIO storage
+- `mlflow_artifacts` - MLflow model artifacts
 
 ---
 
