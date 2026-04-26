@@ -349,24 +349,41 @@ flowchart TD
 
 ### Features
 
-- **Interactive Heatmap**: Leaflet.js with CARTO tiles
+- **Interactive Map**: Leaflet.js 1.9 with CARTO basemap tiles
 - **5 ML Model Predictions**: Fire Risk, Hospital Overpopulation, Emergency Response, Bed Demand, Ambulance Dispatch
-- **Real-time filtering**: Filter by hazard type
-- **3D Visualization**: Three.js for WebGL rendering
-- **Next.js 14 App Router**: Modern React full-stack
+- **Real-time filtering**: Filter by hazard type (Fire, Medical, Hazmat, Rescue)
+- **3D WebGL**: Three.js for browser-based 3D rendering
+- **Next.js 14 App Router**: Modern React full-stack with SSR
+- **React 18**: Concurrent mode, automatic batching
+- **Hot Module Reloading**: Development with live reload
+
+### Tech Stack Details
+
+```mermaid
+flowchart LR
+    subgraph Frontend
+        A[Next.js 14<br/>App Router] --> B[React 18<br/>Hooks]
+        B --> C[State<br/>Management]
+        C --> D[Leaflet.js<br/>1.9]
+        D --> E[CARTO<br/>Tiles]
+        D --> F[Three.js<br/>WebGL]
+    end
+    
+    Style A fill:#000,color:#fff
+    Style B fill:#61dafb,color:#000
+    Style D fill:#2ecc71,color:#000
+    Style F fill:#f39c12,color:#000
+```
 
 ### Running the Web App
 
 ```bash
-# Development
+# Development - requires separate web/ directory
 cd web && npm run dev
 
 # Production build
 cd web && npm run build
 npm start
-
-# Access
-# http://localhost:3000
 ```
 
 ---
@@ -384,8 +401,8 @@ npm start
 | **MLOps** | MLflow | 2.10.0 | Experiment tracking |
 | **LLM** | Ollama | Latest | Local LLM inference |
 | **Viz** | Blender | Latest | 3D Simulation Rendering |
-| **Maps** | Leaflet + Mapbox | Latest | Web mapping |
-| **Frontend** | React + Next.js | 14 | Web app |
+| **Maps** | Leaflet.js 1.9 + CARTO | Latest | Web mapping |
+| **Frontend** | React 18 + Next.js | 14 | Web app |
 | **3D Engine** | Three.js | Latest | WebGL rendering |
 
 ---
