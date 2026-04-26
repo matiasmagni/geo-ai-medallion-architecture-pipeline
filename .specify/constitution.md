@@ -40,7 +40,9 @@ Four test levels MUST pass before deployment:
 1. **100% Code Coverage**: All source modules MUST have 100% test coverage.
 2. **100% Test Pass Rate**: All tests in the suite MUST pass 100% before any deployment.
 3. **Zero Test Skips**: Test skipping is prohibited. All features must be tested, mocked only where absolutely necessary for isolation, and E2E tests MUST run against real infrastructure.
-4. **No Rollbacks**: Forward progress is mandatory. Regression failures must be fixed immediately without reverting committed infrastructure/code.
+4. **No Service Mocking in L2**: L2 component tests MUST connect to real services. If MinIO, MLflow, Prometheus, or any Docker service is unavailable, the test MUST FAIL with a clear error - NOT skip or mock. Fix the infrastructure, don't mock the test.
+5. **Hard Failures**: Service connection failures must cause test failures. No try/except wrappers that swallow errors. No MagicMock fallback fixtures.
+6. **No Rollbacks**: Forward progress is mandatory. Regression failures must be fixed immediately without reverting committed infrastructure/code.
 
 ### VII. GitHub Spec Kit Integration (MANDATORY)
 - All new features and architectural changes MUST be defined via the GitHub Spec Kit (.specify/ directory).

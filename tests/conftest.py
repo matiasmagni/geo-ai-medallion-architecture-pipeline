@@ -162,36 +162,35 @@ def spark_session_l1():
 @pytest.fixture
 def minio_client_l2():
     """Create MinIO client for L2 component tests."""
-    try:
-        from minio import Minio
-        endpoint = os.getenv("S3_ENDPOINT", "http://localhost:9000").replace("http://", "").replace("https://", "")
-        client = Minio(
-            endpoint,
-            access_key=os.getenv("AWS_ACCESS_KEY_ID", "minioadmin"),
-            secret_key=os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin123"),
-            secure=False
-        )
-        # Verify connection
-        client.list_buckets()
-        return client
-    except Exception as e:
-        logger.error(f"MinIO client unavailable: {e}")
-        # Provide mock to avoid skips
-        from unittest.mock import MagicMock
-        return MagicMock()
+    from minio import Minio
+    
+    endpoint = os.getenv("S3_ENDPOINT", "http://localhost:9000").replace("http://", "").replace("https://", "")
+    client = Minio(
+        endpoint,
+        access_key=os.getenv("AWS_ACCESS_KEY_ID", "minioadmin"),
+        secret_key=os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin123"),
+        secure=False
+    )
+    # Verify connection - FAIL if not available
+    client.list_buckets()
+    return client
 
 
 @pytest.fixture
 def mlflow_client_l2():
     """Create MLflow client for L2 component tests."""
-    try:
-        import mlflow
-        mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5001"))
-        from mlflow.tracking import MlflowClient
-        return MlflowClient()
-    except Exception as e:
-        logger.warning(f"MLflow client unavailable: {e}")
-        return None
+    import mlflow
+    import requests
+    
+    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5001"))
+    
+    # Verify connection - make a simple API call
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5001")
+    resp = requests.get(f"{tracking_uri}/api/2.0/preview/mlflow/genesys", timeout=5)
+    resp.raise_for_status()
+    
+    from mlflow.tracking import MlflowClient
+    return MlflowClient()
 
 
 @pytest.fixture
