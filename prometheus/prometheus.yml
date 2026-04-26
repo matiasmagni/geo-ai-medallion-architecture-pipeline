@@ -17,10 +17,9 @@ scrape_configs:
     static_configs:
       - targets: ['otel-collector:8888', 'otel-collector:8889']
 
-  - job_name: 'geoai-pipeline'
+  - job_name: 'geoai-metrics'
     static_configs:
       - targets: ['geoai-metrics:8888']
-    metrics_path: '/metrics'
     scrape_interval: 30s
 
 remote_write:

@@ -127,14 +127,15 @@ services:
       - sh
       - -c
       - |
-        pip install prometheus_client
+        pip install prometheus_client requests
         python /metrics_exporter.py
     volumes:
-      - ./metrics_exporter.py:/metrics_exporter.py:ro
+      - ./src/metrics_exporter.py:/metrics_exporter.py:ro
     ports:
       - "8888:8888"
     networks:
       - geoai-network
+    restart: unless-stopped
 
   # =========================================================================
   # PROMETHEUS - Monitoring
