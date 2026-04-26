@@ -140,16 +140,16 @@ graph TD
 
 ### Service Details
 
-| Service | Port | Image | Purpose |
-|---------|------|-------|---------|
-| **Spark Master** | 9080 | bitnami/spark:3.5 | Distributed compute engine |
-| **MinIO** | 9900/9901 | minio/minio | S3-compatible object storage |
-| **PostgreSQL** | 5434 | postgres:15 | Hive metastore + MLflow backend |
-| **Ollama** | 11434 | ollama/ollama | Local LLM inference |
-| **OTel Collector** | 4317/4318 | otel/opentelemetry-collector | Metrics & traces |
-| **MLflow** | 5001 | mlflow/mlflow | Experiment tracking |
-| **Next.js** | 3000 | node:20-alpine | Web app frontend |
-| **Grafana** | 3001/3002 | grafana/grafana | Dashboards & visualization |
+| Service | Port | Image | Credentials | Purpose |
+|---------|------|-------|-------------|---------|
+| **Grafana** | 3000 | grafana/grafana | admin/admin123 | Dashboards & visualization |
+| **MinIO Console** | 9001 | minio/minio | minioadmin/minioadmin123 | S3 object storage |
+| **MinIO API** | 9000 | minio/minio | minioadmin/minioadmin123 | S3 API |
+| **PostgreSQL** | 5434 | postgres:15 | postgres/postgres | Hive metastore + MLflow |
+| **Ollama** | 11434 | ollama/ollama | (no auth) | Local LLM inference |
+| **MLflow** | 5001 | mlflow/mlflow | (no auth) | Experiment tracking |
+| **Prometheus** | 9090 | prom/prometheus | (no auth) | Metrics |
+| **Spark Master** | 7077 | bitnami/spark:3.5 | (no auth) | Distributed compute |
 
 ### Quick Start
 
@@ -165,25 +165,27 @@ docker compose logs -f spark
 docker compose logs -f minio
 
 # Check health
-curl -s http://localhost:9900/minio/health/live
+curl -s http://localhost:9000/minio/health/live
 curl -s http://localhost:5001/health
-curl -s http://localhost:3001/api/health
+curl -s http://localhost:3000/api/health
+curl -s http://localhost:9090/-/healthy
 ```
 
 ### Individual Service Access
 
 ```bash
-# MinIO Console (admin / minio123)
-http://localhost:9900
+# Grafana Dashboards (admin / admin123)
+http://localhost:3000/d/geoai-data-quality/geoai-data-quality
+http://localhost:3000/d/geoai-pipeline/geoai-pipeline-performance
 
-# MLflow
+# MinIO Console (minioadmin / minioadmin123)
+http://localhost:9001
+
+# MLflow (no auth)
 http://localhost:5001
 
-# Grafana (admin / admin)
-http://localhost:3001
-
-# Next.js Web App
-http://localhost:3000
+# Prometheus (no auth)
+http://localhost:9090
 ```
 
 ### Environment Variables
