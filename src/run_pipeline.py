@@ -19,7 +19,10 @@ def run_command(cmd, description):
 
 
 def main():
-    os.chdir("/home/jovyan")
+    # Get project root directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    os.chdir(project_root)
 
     print("""
 ╔══════════════════════════════════════════════════════════════╗

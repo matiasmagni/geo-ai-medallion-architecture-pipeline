@@ -306,23 +306,65 @@ flowchart TB
 
 ## Web App Architecture
 
+### Maps + React + Next.js Stack
+
 ```mermaid
 flowchart TD
     User["🌍 End User"]
-    subgraph Frontend["🎨 Next.js (Client)"]
-        UI["React / MapClient.tsx"]
+    
+    subgraph Client["🎨 Next.js Client (Browser)"]
+        N[("Next.js 14<br/>:3000")]
+        R["React 18"]
         L["Leaflet.js<br/>Heatmap / Markers"]
-        M["ML Predictions<br/>from Gold Layer"]
+        M["Mapbox / CARTO<br/> basemap tiles"]
+        T["Three.js<br/>3D WebGL"]
     end
     
-    subgraph Backend["⚙️ Pipeline Data"]
-        API["/public/data/*.geojson"]
+    subgraph Data["📊 Gold Layer Data"]
+        G["Gold Delta Tables<br/>MinIO"]
+        P["Parquet Files"]
     end
     
-    User --> UI
-    UI --> L
+    subgraph ML["🤖 ML Predictions"]
+        Ollama["Ollama<br/>llama3.2:1b"]
+        MLflow["MLflow<br/>5 Models"]
+    end
+    
+    User --> N
+    N --> R
+    R --> L
     L --> M
-    M -- "Query Gold" --> API
+    L -- "Query risk data" --> G
+    G -- "ML inference" --> Ollama
+    Ollama -- "model predictions" --> R
+    R --> T
+    
+    style N fill:#339,color:#fff
+    style R fill:#61dafb,color:#000
+    style L fill:#2ecc71,color:#000
+    style M fill:#f39c12,color:#000
+```
+
+### Features
+
+- **Interactive Heatmap**: Leaflet.js with CARTO tiles
+- **5 ML Model Predictions**: Fire Risk, Hospital Overpopulation, Emergency Response, Bed Demand, Ambulance Dispatch
+- **Real-time filtering**: Filter by hazard type
+- **3D Visualization**: Three.js for WebGL rendering
+- **Next.js 14 App Router**: Modern React full-stack
+
+### Running the Web App
+
+```bash
+# Development
+cd web && npm run dev
+
+# Production build
+cd web && npm run build
+npm start
+
+# Access
+# http://localhost:3000
 ```
 
 ---
@@ -340,6 +382,9 @@ flowchart TD
 | **MLOps** | MLflow | 2.10.0 | Experiment tracking |
 | **LLM** | Ollama | Latest | Local LLM inference |
 | **Viz** | Blender | Latest | 3D Simulation Rendering |
+| **Maps** | Leaflet + Mapbox | Latest | Web mapping |
+| **Frontend** | React + Next.js | 14 | Web app |
+| **3D Engine** | Three.js | Latest | WebGL rendering |
 
 ---
 
