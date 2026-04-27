@@ -110,9 +110,15 @@ def create_spark_session(config: Config) -> SparkSession:
     conf.setAppName(config.APP_NAME)
     conf.setMaster(config.SPARK_MASTER)
     
-    # Sedona Configuration
+    # Load Delta and Sedona JARs via packages
+    conf.set("spark.jars.packages", "io.delta:delta-spark_2.12:3.1.0,org.apache.sedona:sedona-spark-3.5_2.12:1.7.0")
+    
+    # Delta Lake configuration
+    conf.set("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+    conf.set("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+    
+    # Use default serializer
     conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-    conf.set("spark.kryo.registrator", "org.apache.sedona.core.sedona.SedonaKryoRegistrator")
     
     # MinIO / S3A Configuration
     conf.set("spark.hadoop.fs.s3a.endpoint", config.MINIO_ENDPOINT)
@@ -121,18 +127,60 @@ def create_spark_session(config: Config) -> SparkSession:
     conf.set("spark.hadoop.fs.s3a.path.style.access", "true")
     conf.set("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
     
+    # Java 17+ compatibility: inject JVM module opens for Hadoop security
+    java_opts = " ".join([
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
+        "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED",
+        "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.ssl=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth.callback=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth.kerberos=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth.login=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth.spi=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.sasl=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth.callback=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth.login=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth.kerberos=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth.spi=ALL-UNNAMED",
+        "--add-opens=java.security.jgss/sun.security.jgss=ALL-UNNAMED",
+        "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED",
+        "--add-opens=java.security.jgss/sun.security.krb5.internal=ALL-UNNAMED",
+        "--add-opens=java.security.jgss/sun.security.tools.keytool=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.pkcs=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.provider=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.util=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.x509=ALL-UNNAMED",
+        "--add-opens=java.rmi/sun.rmi.transport=ALL-UNNAMED",
+        "--add-opens=java.naming/sun.security.jgss=ALL-UNNAMED",
+    ])
+    conf.set("spark.driver.extraJavaOptions", java_opts)
+    conf.set("spark.executor.extraJavaOptions", java_opts)
+    
     # Build Session
     spark = SparkSession.builder.config(conf=conf).getOrCreate()
     
-    # Initialize Sedona
+    # Initialize Sedona after session is created
     try:
         from sedona.spark import SedonaContext
         SedonaContext.create(spark)
-        logger.info("Sedona context initialized")
-    except ImportError:
-        logger.warning("Sedona not installed")
-        
-
+        logger.info("Sedona initialized successfully")
+    except Exception as e:
+        logger.warning(f"Sedona initialization failed: {e}")
+         
     return spark
 
 
@@ -146,47 +194,22 @@ def create_geometry_from_latlon(
     lat_col: str = "latitude",
     lon_col: str = "longitude",
     geometry_col: str = "geometry",
+    drop_nulls: bool = False,
 ) -> DataFrame:
     """
-    Convert lat/lon columns to Sedona geometry Point.
-
-    Uses Sedona's ST_Point function. Falls back to WKT if Sedona unavailable.
-
-    Parameters
-    ----------
-    df : DataFrame
-        Input DataFrame
-    lat_col : str
-        Latitude column name
-    lon_col : str
-        Longitude column name
-    geometry_col : str
-        Output geometry column name
-
-    Returns
-    -------
-    DataFrame
-        DataFrame with geometry column
+    Create geometry column from lat/lon using Sedona ST_Point.
     """
-    try:
-        # Try Sedona approach
-        df = df.withColumn(geometry_col, F.expr(f"ST_Point({lon_col}, {lat_col})"))
-        logger.info(f"Created geometry from {lat_col}/{lon_col} using ST_Point")
+    # Create geometry from lat/lon using Sedona ST_Point
+    df = df.withColumn(
+        geometry_col,
+        F.expr(f"ST_Point({lon_col}, {lat_col})"),
+    )
 
-    except Exception as e:
-        # Fallback: use WKT string (works without Sedona)
-        logger.warning(f"ST_Point failed ({e}), using WKT fallback")
-        df = df.withColumn(
-            geometry_col,
-            F.concat(
-                F.lit("POINT("),
-                F.col(lon_col).cast(StringType()),
-                F.lit(" "),
-                F.col(lat_col).cast(StringType()),
-                F.lit(")"),
-            ),
-        )
+    if drop_nulls:
+        df = df.filter(F.col(geometry_col).isNotNull())
+        logger.info(f"Dropped null geometries")
 
+    logger.info(f"Created geometry column from {lat_col}/{lon_col}")
     return df
 
 
@@ -195,29 +218,12 @@ def parse_geojson_geometry(
 ) -> DataFrame:
     """
     Parse GeoJSON string to Sedona geometry.
-
-    Parameters
-    ----------
-    df : DataFrame
-        Input DataFrame
-    geojson_col : str
-        Input GeoJSON column
-    geometry_col : str
-        Output geometry column name
-
-    Returns
-    -------
-    DataFrame
-        DataFrame with parsed geometry
     """
     try:
         df = df.withColumn(geometry_col, F.expr(f"ST_GeomFromGeoJSON({geojson_col})"))
         logger.info(f"Parsed GeoJSON geometry from {geojson_col}")
-
     except Exception as e:
         logger.warning(f"GeoJSON parsing failed ({e})")
-        # Keep original as string
-
     return df
 
 
@@ -250,18 +256,22 @@ def load_neighborhoods_mask(spark: SparkSession, config: Config) -> Optional[Dat
             return None
 
         # Compute bounding box to validate neighborhood coverage
-        bbox_row = df.select(
-            F.expr("ST_XMin(geometry)").alias("min_lon"),
-            F.expr("ST_XMax(geometry)").alias("max_lon"),
-            F.expr("ST_YMin(geometry)").alias("min_lat"),
-            F.expr("ST_YMax(geometry)").alias("max_lat"),
-        ).collect()[0]
+        try:
+            bbox_row = df.select(
+                F.expr("ST_XMin(geometry)").alias("min_lon"),
+                F.expr("ST_XMax(geometry)").alias("max_lon"),
+                F.expr("ST_YMin(geometry)").alias("min_lat"),
+                F.expr("ST_YMax(geometry)").alias("max_lat"),
+            ).collect()[0]
 
-        logger.info(
-            f"Loaded land mask: {count} neighborhood polygons, "
-            f"bbox ({bbox_row.min_lon:.2f},{bbox_row.min_lat:.2f}) -> "
-            f"({bbox_row.max_lon:.2f},{bbox_row.max_lat:.2f})"
-        )
+            logger.info(
+                f"Loaded land mask: {count} neighborhood polygons, "
+                f"bbox ({bbox_row.min_lon:.2f},{bbox_row.min_lat:.2f}) -> "
+                f"({bbox_row.max_lon:.2f},{bbox_row.max_lat:.2f})"
+            )
+        except Exception as bbox_err:
+            logger.warning(f"Could not compute bbox: {bbox_err}")
+            
         return df
     except Exception as e:
         logger.warning(f"Could not load neighborhoods for land mask: {e}")
@@ -573,36 +583,37 @@ def parse_ai_enrichment(json_str: str) -> Dict[str, Any]:
 
 def read_bronze_table(spark: SparkSession, source: str) -> DataFrame:
     """
-    Read Bronze table from s3a://
+    Read Bronze table - tries local first, falls back to S3A.
 
     Parameters
     ----------
     spark : SparkSession
         Spark session
     source : str
-        Source name (e.g., 'us_accidents')
+        Source name (e.g., 'usgs_earthquakes')
 
     Returns
     -------
     DataFrame
         Bronze data
     """
-    path = f"s3a://{Config.BRONZE_BUCKET}/{source}/*"
+    # Default to local path (S3A requires hadoop-aws jar not available for Python 3.13 ARM64)
+    local_path = f"/tmp/geoai/bronze/{source}"
 
     try:
-        df = spark.read.format("parquet").load(path)
-        logger.info(f"Read {df.count()} rows from bronze/{source}")
+        df = spark.read.format("parquet").load(local_path)
+        logger.info(f"Read from local: {local_path}")
         return df
     except Exception as e:
-        logger.error(f"Failed to read bronze/{source}: {e}")
-        # Try local fallback
-        local_path = f"/tmp/geoai/bronze/{source}/*"
+        logger.error(f"Failed to read local {local_path}: {e}")
+        # Try S3A as fallback
+        s3a_path = f"s3a://{Config.BRONZE_BUCKET}/{source}/*"
         try:
-            df = spark.read.format("parquet").load(local_path)
-            logger.info(f"Read from local: {local_path}")
+            df = spark.read.format("parquet").load(s3a_path)
+            logger.info(f"Read from S3A: {s3a_path}")
             return df
         except Exception as e2:
-            logger.error(f"Local fallback also failed: {e2}")
+            logger.error(f"S3A fallback also failed: {e2}")
             raise
 
 
@@ -790,17 +801,6 @@ def transform_osm_infrastructure(
 ) -> DataFrame:
     """
     Transform OSM Infrastructure: Add geometry + land mask filter.
-
-    Parameters
-    ----------
-    spark : SparkSession
-    config : Config
-    neighborhoods_df : Optional[DataFrame]
-        Neighborhood polygons for land mask filtering
-
-    Returns
-    -------
-    DataFrame
     """
     logger.info("Transforming OSM Infrastructure to Silver...")
 
@@ -905,18 +905,20 @@ def run_silver_enrichment() -> bool:
         logger.info("Loading neighborhoods for land mask...")
         neighborhoods_df = load_neighborhoods_mask(spark, config)
 
-        # Transform all sources with land mask filtering
-        df_accidents = transform_us_accidents(spark, config, neighborhoods_df)
+        # Transform ONLY available sources (skip us_accidents - not in bronze)
+        # Available: usgs_earthquakes, osm_infrastructure, us_neighborhoods
+        #           nyc_311, nyc_flights, nyc_weather (from bronze_ingestion.py)
+        
+        # USGS Earthquakes
         df_usgs = transform_usgs_earthquakes(spark, config)
+        
+        # OSM Infrastructure 
         df_osm = transform_osm_infrastructure(spark, config, neighborhoods_df)
+        
+        # Neighborhoods (for reference/dim table)
         df_neighborhoods = transform_us_neighborhoods(spark, config)
 
-        # NYC 311 requires more processing
-        # (skip in this version due to token limits)
-        # df_311 = transform_nyc_311(spark, config, neighborhoods_df)
-
         # Write all
-        write_silver_table(df_accidents, "us_accidents_silver")
         write_silver_table(df_usgs, "usgs_earthquakes_silver")
         write_silver_table(df_osm, "osm_infrastructure_silver")
         write_silver_table(df_neighborhoods, "us_neighborhoods_silver")

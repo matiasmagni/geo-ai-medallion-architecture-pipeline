@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Runner script for the GeoAI Medallion Architecture Pipeline.
-Executes: Bronze → Silver → Gold
+Executes: Bronze -> Silver -> Gold
 """
 
 import os
@@ -9,9 +9,44 @@ import sys
 import subprocess
 
 
+def set_java17():
+    """Set JAVA_HOME to Java 17 if available, for PySpark 3.4.x compatibility."""
+    import shutil
+    java17_path = shutil.which("java17") or "/opt/homebrew/opt/openjdk@17/bin/java"
+    if os.path.exists(java17_path):
+        java_home = os.path.dirname(os.path.dirname(java17_path))
+        os.environ["JAVA_HOME"] = java_home
+        os.environ["PATH"] = f"{java_home}/bin:" + os.environ.get("PATH", "")
+        print(f"✓ Using Java 17: {java_home}")
+
+
+set_java17()
+
+
+# Inject JVM options for Java 17+ compatibility
+# Note: For Java 21+, these options must also be passed via PYSPARK_SUBMIT_ARGS
+java_opts_list = [
+    "--add-opens=java.base/java.lang=ALL-UNNAMED",
+    "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+    "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+    "--add-opens=java.base/java.io=ALL-UNNAMED",
+    "--add-opens=java.base/java.net=ALL-UNNAMED",
+    "--add-opens=java.base/java.nio=ALL-UNNAMED",
+    "--add-opens=java.base/java.util=ALL-UNNAMED",
+    "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+    "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
+    "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+    "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
+    "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
+    "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED",
+]
+os.environ["JDK_JAVA_OPTIONS"] = " ".join(java_opts_list)
+os.environ["PYSPARK_SUBMIT_ARGS"] = f"--driver-java-options \"{' '.join(java_opts_list)}\" pyspark-shell"
+
+
 def run_command(cmd, description):
     """Run a shell command and print result."""
-    print(f"\n{'=' * 60}")
+    print("\n" + "=" * 60)
     print(f"  {description}")
     print("=" * 60)
     result = subprocess.run(cmd, shell=True, capture_output=False)
@@ -24,15 +59,8 @@ def main():
     project_root = os.path.dirname(script_dir)
     os.chdir(project_root)
 
-    print("""
-╔══════════════════════════════════════════════════════════════╗
-║     GEOAI MEDALLION ARCHITECTURE PIPELINE                  ║
-║     Shift-Left AI Pattern                                   ║
-╚══════════════════════════════════════════════════════════════╝
-    """)
-
     # Environment setup
-    os.environ["OLLAMA_BASE_URL"] = "http://geoai-ollama:11434"
+    os.environ["OLLAMA_BASE_URL"] = "http://localhost:11434"
     os.environ["OLLAMA_MODEL"] = "llama3.2:1b"
 
     # Step 1: Bronze Layer (raw data)
@@ -54,9 +82,9 @@ def main():
     os.system("python src/gold_dimensional_modeling.py")
 
     print("""
-╔══════════════════════════════════════════════════════════════╗
-║     PIPELINE COMPLETE                                      ║
-╚══════════════════════════════════════════════════════════════╝
+============================================================
+     PIPELINE COMPLETE
+============================================================
     """)
 
 
