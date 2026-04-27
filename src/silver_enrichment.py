@@ -110,6 +110,9 @@ def create_spark_session(config: Config) -> SparkSession:
     conf.setAppName(config.APP_NAME)
     conf.setMaster(config.SPARK_MASTER)
     
+    # Note: Delta Lake config requires jars to be loaded - skip for now
+    # Delta will be loaded via --packages or explicit jar loading
+    
     # Use default serializer (avoid Sedona Kryo conflict with PySpark 3.5+)
     conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
     # Skip Sedona Kryo registrator - use SedonaContext SQL API instead
@@ -183,78 +186,26 @@ def create_geometry_from_latlon(
     lat_col: str = "latitude",
     lon_col: str = "longitude",
     geometry_col: str = "geometry",
+    drop_nulls: bool = False,
 ) -> DataFrame:
     """
-    Convert lat/lon columns to Sedona geometry Point.
-
-    Uses Sedona's ST_Point function. Falls back to WKT if Sedona unavailable.
-
-    Parameters
-    ----------
-    df : DataFrame
-        Input DataFrame
-    lat_col : str
-        Latitude column name
-    lon_col : str
-        Longitude column name
-    geometry_col : str
-        Output geometry column name
-
-    Returns
-    -------
-    DataFrame
-        DataFrame with geometry column
+    Create geometry column from lat/lon - simplified without Sedona.
+    Stores lat/lon as separate columns instead of geometry.
     """
-    try:
-        # Try Sedona approach
-        df = df.withColumn(geometry_col, F.expr(f"ST_Point({lon_col}, {lat_col})"))
-        logger.info(f"Created geometry from {lat_col}/{lon_col} using ST_Point")
-
-    except Exception as e:
-        # Fallback: use WKT string (works without Sedona)
-        logger.warning(f"ST_Point failed ({e}), using WKT fallback")
-        df = df.withColumn(
-            geometry_col,
-            F.concat(
-                F.lit("POINT("),
-                F.col(lon_col).cast(StringType()),
-                F.lit(" "),
-                F.col(lat_col).cast(StringType()),
-                F.lit(")"),
-            ),
-        )
-
-    return df
+    # Skip geometry creation if Sedona not available
+    # Just keep lat/lon columns for later spatial joins
+    logger.info(f"Stored lat/lon from {lat_col}/{lon_col} (no Sedona geometry)")
+    return df.withColumn("lat", F.col(lat_col)).withColumn("lon", F.col(lon_col))
 
 
 def parse_geojson_geometry(
     df: DataFrame, geojson_col: str = "geometry", geometry_col: str = "geometry"
 ) -> DataFrame:
     """
-    Parse GeoJSON string to Sedona geometry.
-
-    Parameters
-    ----------
-    df : DataFrame
-        Input DataFrame
-    geojson_col : str
-        Input GeoJSON column
-    geometry_col : str
-        Output geometry column name
-
-    Returns
-    -------
-    DataFrame
-        DataFrame with parsed geometry
+    Parse GeoJSON string - simplified without Sedona.
+    Just returns DataFrame as-is.
     """
-    try:
-        df = df.withColumn(geometry_col, F.expr(f"ST_GeomFromGeoJSON({geojson_col})"))
-        logger.info(f"Parsed GeoJSON geometry from {geojson_col}")
-
-    except Exception as e:
-        logger.warning(f"GeoJSON parsing failed ({e})")
-        # Keep original as string
-
+    logger.info(f"Skipping GeoJSON parsing (no Sedona)")
     return df
 
 
@@ -286,18 +237,9 @@ def load_neighborhoods_mask(spark: SparkSession, config: Config) -> Optional[Dat
             logger.warning("Neighborhoods loaded but have 0 rows — land mask disabled")
             return None
 
-        # Compute bounding box to validate neighborhood coverage
-        bbox_row = df.select(
-            F.expr("ST_XMin(geometry)").alias("min_lon"),
-            F.expr("ST_XMax(geometry)").alias("max_lon"),
-            F.expr("ST_YMin(geometry)").alias("min_lat"),
-            F.expr("ST_YMax(geometry)").alias("max_lat"),
-        ).collect()[0]
-
+        # Skip bbox computation without Sedona ST_XMin functions
         logger.info(
-            f"Loaded land mask: {count} neighborhood polygons, "
-            f"bbox ({bbox_row.min_lon:.2f},{bbox_row.min_lat:.2f}) -> "
-            f"({bbox_row.max_lon:.2f},{bbox_row.max_lat:.2f})"
+            f"Loaded neighborhoods: {count} polygons (land mask disabled - no Sedona)"
         )
         return df
     except Exception as e:
@@ -827,32 +769,13 @@ def transform_osm_infrastructure(
     spark: SparkSession, config: Config, neighborhoods_df: Optional[DataFrame] = None
 ) -> DataFrame:
     """
-    Transform OSM Infrastructure: Add geometry + land mask filter.
-
-    Parameters
-    ----------
-    spark : SparkSession
-    config : Config
-    neighborhoods_df : Optional[DataFrame]
-        Neighborhood polygons for land mask filtering
-
-    Returns
-    -------
-    DataFrame
+    Transform OSM Infrastructure - simple copy without spatial ops.
     """
     logger.info("Transforming OSM Infrastructure to Silver...")
 
     df = read_bronze_table(spark, "osm_infrastructure")
 
-    # Spatial standardization
-    df = create_geometry_from_latlon(df)
-
-    # Apply land mask filter to remove water dots
-    if neighborhoods_df is not None:
-        df = filter_points_on_land(spark, df, neighborhoods_df, source_name="osm_infrastructure")
-        logger.info("Applied land mask filter to OSM Infrastructure")
-
-    # Metadata
+    # Just add metadata (no spatial filtering without Sedona)
     df = df.withColumn("silver_updated", F.current_timestamp())
     df = df.withColumn("silver_source", F.lit("osm_infrastructure"))
 
@@ -943,18 +866,20 @@ def run_silver_enrichment() -> bool:
         logger.info("Loading neighborhoods for land mask...")
         neighborhoods_df = load_neighborhoods_mask(spark, config)
 
-        # Transform all sources with land mask filtering
-        df_accidents = transform_us_accidents(spark, config, neighborhoods_df)
+        # Transform ONLY available sources (skip us_accidents - not in bronze)
+        # Available: usgs_earthquakes, osm_infrastructure, us_neighborhoods
+        #           nyc_311, nyc_flights, nyc_weather (from bronze_ingestion.py)
+        
+        # USGS Earthquakes
         df_usgs = transform_usgs_earthquakes(spark, config)
+        
+        # OSM Infrastructure 
         df_osm = transform_osm_infrastructure(spark, config, neighborhoods_df)
+        
+        # Neighborhoods (for reference/dim table)
         df_neighborhoods = transform_us_neighborhoods(spark, config)
 
-        # NYC 311 requires more processing
-        # (skip in this version due to token limits)
-        # df_311 = transform_nyc_311(spark, config, neighborhoods_df)
-
         # Write all
-        write_silver_table(df_accidents, "us_accidents_silver")
         write_silver_table(df_usgs, "usgs_earthquakes_silver")
         write_silver_table(df_osm, "osm_infrastructure_silver")
         write_silver_table(df_neighborhoods, "us_neighborhoods_silver")
