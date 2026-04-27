@@ -14,10 +14,13 @@ echo "Running as: $(whoami)"
 
 # Set Java - Use the ARM64 path from docker-compose.yml
 export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-arm64"
+export SPARK_JAVA_OPTS="$SPARK_JAVA_OPTS --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED"
 echo "JAVA_HOME: ${JAVA_HOME}"
 
 # Inject JVM option to disable security manager
-export SPARK_JAVA_OPTS="$SPARK_JAVA_OPTS -Djava.security.manager=disabled"
+# Removed '-Djava.security.manager=allow' as it caused JVM initialization errors.
+# Keeping '--add-opens' flags for Java 17+ compatibility.
+export SPARK_JAVA_OPTS="$SPARK_JAVA_OPTS --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED"
 
 # Create logs dir in user's home (jovyan)
 LOG_DIR="${HOME}/spark_logs"
