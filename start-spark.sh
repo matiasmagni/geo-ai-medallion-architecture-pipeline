@@ -12,9 +12,12 @@ echo "SPARK_HOME: ${SPARK_HOME}"
 # Check actual user
 echo "Running as: $(whoami)"
 
-# Set Java
-export JAVA_HOME="${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk-amd64}"
+# Set Java - Use the ARM64 path from docker-compose.yml
+export JAVA_HOME="/usr/lib/jvm/java-17-openjdk-arm64"
 echo "JAVA_HOME: ${JAVA_HOME}"
+
+# Inject JVM option to disable security manager
+export SPARK_JAVA_OPTS="$SPARK_JAVA_OPTS -Djava.security.manager=disabled"
 
 # Create logs dir in user's home (jovyan)
 LOG_DIR="${HOME}/spark_logs"
