@@ -131,8 +131,52 @@ def create_spark_session(config: Config) -> SparkSession:
         .master(config.SPARK_MASTER)
         .config("spark.sql.adaptive.enabled", "true")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
         .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.1.0")
     )
+    
+    # Java 17+ compatibility: inject JVM module opens for Hadoop security
+    java_opts = " ".join([
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
+        "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED",
+        "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.ssl=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth.callback=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth.kerberos=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth.login=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth.spi=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.sasl=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth.callback=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth.login=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth.kerberos=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth.spi=ALL-UNNAMED",
+        "--add-opens=java.security.jgss/sun.security.jgss=ALL-UNNAMED",
+        "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED",
+        "--add-opens=java.security.jgss/sun.security.krb5.internal=ALL-UNNAMED",
+        "--add-opens=java.security.jgss/sun.security.tools.keytool=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.pkcs=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.provider=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.util=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.x509=ALL-UNNAMED",
+        "--add-opens=java.rmi/sun.rmi.transport=ALL-UNNAMED",
+        "--add-opens=java.naming/sun.security.jgss=ALL-UNNAMED",
+    ])
+    builder = builder.config("spark.driver.extraJavaOptions", java_opts)
+    builder = builder.config("spark.executor.extraJavaOptions", java_opts)
     
     return builder.getOrCreate()
 
@@ -200,6 +244,20 @@ def create_dim_neighborhoods(spark: SparkSession) -> DataFrame:
 
     df = read_silver_table(spark, "us_neighborhoods_silver")
 
+    # Derive county_fips/state_fips from neighborhood_id if not present
+    # GEOID format: state(2) + county(3) + tract(6) = 11 digits → county_fips = first 5 digits
+    existing_cols = df.columns
+    if "county_fips" not in existing_cols and "neighborhood_id" in existing_cols:
+        df = df.withColumn(
+            "county_fips",
+            F.substring(F.col("neighborhood_id"), 1, 5),
+        )
+    if "state_fips" not in existing_cols and "neighborhood_id" in existing_cols:
+        df = df.withColumn(
+            "state_fips",
+            F.substring(F.col("neighborhood_id"), 1, 2),
+        )
+
     # Select and rename for star schema
     dim = df.select(
         F.col("neighborhood_id").alias("neighborhood_id"),
@@ -256,34 +314,38 @@ def create_dim_infrastructure(spark: SparkSession) -> DataFrame:
 
     df = read_silver_table(spark, "osm_infrastructure_silver")
 
-    # Select for dimension
-    dim = df.select(
+    # Map osm_id to facility_id if needed
+    existing_cols = df.columns
+    if "facility_id" not in existing_cols and "osm_id" in existing_cols:
+        df = df.withColumn("facility_id", F.col("osm_id").cast("string"))
+
+    # Select for dimension (handle missing address column)
+    select_cols = [
         F.col("facility_id").alias("facility_id"),
         F.col("name").alias("facility_name"),
         F.col("facility_type").alias("facility_type"),
         F.col("latitude").alias("facility_lat"),
         F.col("longitude").alias("facility_lon"),
-        F.col("address").alias("facility_address"),
         F.col("geometry").alias("facility_geometry"),
         F.col("silver_updated").alias("effective_date"),
-    )
+    ]
+    if "address" in existing_cols:
+        select_cols.append(F.col("address").alias("facility_address"))
+
+    dim = df.select(*select_cols)
 
     # Add surrogate key
     window = Window.orderBy(F.col("facility_id"))
     dim = dim.withColumn("infrastructure_sk", F.row_number().over(window))
 
-    # Reorder
-    dim = dim.select(
-        "infrastructure_sk",
-        "facility_id",
-        "facility_name",
-        "facility_type",
-        "facility_lat",
-        "facility_lon",
-        "facility_address",
-        "facility_geometry",
-        "effective_date",
-    )
+    # Reorder - include only columns that exist
+    dim_cols = dim.columns
+    final_order = ["infrastructure_sk", "facility_id", "facility_name", "facility_type", "facility_lat", "facility_lon"]
+    if "facility_address" in dim_cols:
+        final_order.append("facility_address")
+    final_order.extend(["facility_geometry", "effective_date"])
+    final_order = [c for c in final_order if c in dim_cols]
+    dim = dim.select(*final_order)
 
     logger.info(f"DIM_INFRASTRUCTURE: {dim.count()} rows")
     return dim
@@ -318,45 +380,35 @@ def create_fact_hazard_events(spark: SparkSession) -> DataFrame:
     """
     logger.info("Creating FACT_HAZARD_EVENTS...")
 
-    # Read all event sources
-    accidents = read_silver_table(spark, "us_accidents_silver")
-    earthquakes = read_silver_table(spark, "usgs_earthquakes_silver")
+    # Read available event sources (some may not exist in Silver)
+    earthquakes = None
+    try:
+        earthquakes = read_silver_table(spark, "usgs_earthquakes_silver")
+    except Exception as e:
+        logger.warning(f"Could not read usgs_earthquakes_silver: {e}")
+
+    if earthquakes is None:
+        logger.warning("No hazard event sources found in Silver")
+        return None
 
     # Standardize columns for union
-    # US Accidents
-    acc = accidents.select(
-        F.col("incident_id").alias("event_id"),
-        F.lit("us_accidents").alias("source_system"),
-        F.col("incident_description").alias("event_description"),
-        F.col("latitude").alias("event_lat"),
-        F.col("longitude").alias("event_lon"),
-        F.col("geometry").alias("event_geometry"),
-        F.col("ai_severity").alias("severity"),
-        F.col("ai_hazard_type").alias("hazard_type"),
-        F.col("start_time").alias("event_time"),
-        F.col("address").alias("event_address"),
-        F.col("city").alias("event_city"),
-        F.col("state").alias("event_state"),
-    ).withColumn("source_table", F.lit("us_accidents"))
-
-    # USGS Earthquakes
+    # USGS Earthquakes - column is earthquake_id, not event_id
     eq = earthquakes.select(
-        F.col("event_id").alias("event_id"),
+        F.col("earthquake_id").alias("event_id"),
         F.lit("usgs_earthquakes").alias("source_system"),
-        F.col("description").alias("event_description"),
+        F.col("place").alias("event_description"),
         F.col("latitude").alias("event_lat"),
         F.col("longitude").alias("event_lon"),
         F.col("geometry").alias("event_geometry"),
-        F.col("ai_severity").alias("severity"),
-        F.col("ai_hazard_type").alias("hazard_type"),
+        F.col("magnitude").alias("severity"),
+        F.lit("earthquake").alias("hazard_type"),
         F.col("time").alias("event_time"),
-        F.col("place").alias("event_address"),  # Use place as address
+        F.col("place").alias("event_address"),
         F.lit("").alias("event_city"),
         F.lit("").alias("event_state"),
     ).withColumn("source_table", F.lit("usgs_earthquakes"))
 
-    # Union all sources
-    fact = acc.unionByName(eq)
+    fact = eq
 
     # Add surrogate key
     window = Window.orderBy(F.col("event_id"))
@@ -625,6 +677,8 @@ def run_gold_dimensional() -> bool:
             # Create fact with tracing
             with traced_context("gold", "create_fact_hazard_events"):
                 fact = create_fact_hazard_events(spark)
+                if fact is not None and fact.count() > 0:
+                    write_gold_table(fact, "fact_hazard_events")
         except Exception as e:
             logger.error(f"Error creating fact_hazard_events: {e}")
             if GOLD_ERRORS:

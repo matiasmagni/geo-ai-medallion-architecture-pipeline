@@ -1,0 +1,19 @@
+# Core MLflow and data processing dependencies
+mlflow==2.14.*
+pyspark>=3.4.0
+pandas>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+requests>=2.31.0
+
+# Optional: Ollama for LLM integration (not required for basic MLflow tracking)
+# ollama>=0.1.0
+
+# Development dependencies (optional)
+jupyter>=1.0.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Testing dependencies (optional)
+pytest>=7.0.0
+pytest-cov>=4.0.0
