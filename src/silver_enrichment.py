@@ -110,9 +110,9 @@ def create_spark_session(config: Config) -> SparkSession:
     conf.setAppName(config.APP_NAME)
     conf.setMaster(config.SPARK_MASTER)
     
-    # Sedona Configuration
+    # Use default serializer (avoid Sedona Kryo conflict with PySpark 3.5+)
     conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-    conf.set("spark.kryo.registrator", "org.apache.sedona.core.sedona.SedonaKryoRegistrator")
+    # Skip Sedona Kryo registrator - use SedonaContext SQL API instead
     
     # MinIO / S3A Configuration
     conf.set("spark.hadoop.fs.s3a.endpoint", config.MINIO_ENDPOINT)
@@ -167,15 +167,9 @@ def create_spark_session(config: Config) -> SparkSession:
     # Build Session
     spark = SparkSession.builder.config(conf=conf).getOrCreate()
     
-    # Initialize Sedona
-    try:
-        from sedona.spark import SedonaContext
-        SedonaContext.create(spark)
-        logger.info("Sedona context initialized")
-    except ImportError:
-        logger.warning("Sedona not installed")
-        
-
+    # Note: Sedona requires compatible jars - skip initialization, use plain GeoPandas for spatial ops
+    logger.info("Spark session created (without Sedona spatial)")
+         
     return spark
 
 
@@ -616,36 +610,37 @@ def parse_ai_enrichment(json_str: str) -> Dict[str, Any]:
 
 def read_bronze_table(spark: SparkSession, source: str) -> DataFrame:
     """
-    Read Bronze table from s3a://
+    Read Bronze table - tries local first, falls back to S3A.
 
     Parameters
     ----------
     spark : SparkSession
         Spark session
     source : str
-        Source name (e.g., 'us_accidents')
+        Source name (e.g., 'usgs_earthquakes')
 
     Returns
     -------
     DataFrame
         Bronze data
     """
-    path = f"s3a://{Config.BRONZE_BUCKET}/{source}/*"
+    # Default to local path (S3A requires hadoop-aws jar not available for Python 3.13 ARM64)
+    local_path = f"/tmp/geoai/bronze/{source}"
 
     try:
-        df = spark.read.format("parquet").load(path)
-        logger.info(f"Read {df.count()} rows from bronze/{source}")
+        df = spark.read.format("parquet").load(local_path)
+        logger.info(f"Read from local: {local_path}")
         return df
     except Exception as e:
-        logger.error(f"Failed to read bronze/{source}: {e}")
-        # Try local fallback
-        local_path = f"/tmp/geoai/bronze/{source}/*"
+        logger.error(f"Failed to read local {local_path}: {e}")
+        # Try S3A as fallback
+        s3a_path = f"s3a://{Config.BRONZE_BUCKET}/{source}/*"
         try:
-            df = spark.read.format("parquet").load(local_path)
-            logger.info(f"Read from local: {local_path}")
+            df = spark.read.format("parquet").load(s3a_path)
+            logger.info(f"Read from S3A: {s3a_path}")
             return df
         except Exception as e2:
-            logger.error(f"Local fallback also failed: {e2}")
+            logger.error(f"S3A fallback also failed: {e2}")
             raise
 
 

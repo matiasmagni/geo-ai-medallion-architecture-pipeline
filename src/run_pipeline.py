@@ -9,6 +9,20 @@ import sys
 import subprocess
 
 
+def set_java17():
+    """Set JAVA_HOME to Java 17 if available, for PySpark 3.4.x compatibility."""
+    import shutil
+    java17_path = shutil.which("java17") or "/opt/homebrew/opt/openjdk@17/bin/java"
+    if os.path.exists(java17_path):
+        java_home = os.path.dirname(os.path.dirname(java17_path))
+        os.environ["JAVA_HOME"] = java_home
+        os.environ["PATH"] = f"{java_home}/bin:" + os.environ.get("PATH", "")
+        print(f"✓ Using Java 17: {java_home}")
+
+
+set_java17()
+
+
 # Inject JVM options for Java 17+ compatibility
 # Note: For Java 21+, these options must also be passed via PYSPARK_SUBMIT_ARGS
 java_opts_list = [
