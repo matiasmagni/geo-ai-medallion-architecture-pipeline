@@ -134,6 +134,49 @@ def create_spark_session(config: Config) -> SparkSession:
         .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.1.0")
     )
     
+    # Java 17+ compatibility: inject JVM module opens for Hadoop security
+    java_opts = " ".join([
+        "--add-opens=java.base/java.lang=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+        "--add-opens=java.base/java.io=ALL-UNNAMED",
+        "--add-opens=java.base/java.net=ALL-UNNAMED",
+        "--add-opens=java.base/java.nio=ALL-UNNAMED",
+        "--add-opens=java.base/java.util=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+        "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+        "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
+        "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED",
+        "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
+        "--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.ssl=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth.callback=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth.kerberos=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth.login=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.auth.spi=ALL-UNNAMED",
+        "--add-opens=java.base/javax.security.sasl=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth.callback=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth.login=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth.kerberos=ALL-UNNAMED",
+        "--add-opens=java.base/com.sun.security.auth.spi=ALL-UNNAMED",
+        "--add-opens=java.security.jgss/sun.security.jgss=ALL-UNNAMED",
+        "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED",
+        "--add-opens=java.security.jgss/sun.security.krb5.internal=ALL-UNNAMED",
+        "--add-opens=java.security.jgss/sun.security.tools.keytool=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.pkcs=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.provider=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.util=ALL-UNNAMED",
+        "--add-opens=java.base/sun.security.x509=ALL-UNNAMED",
+        "--add-opens=java.rmi/sun.rmi.transport=ALL-UNNAMED",
+        "--add-opens=java.naming/sun.security.jgss=ALL-UNNAMED",
+    ])
+    builder = builder.config("spark.driver.extraJavaOptions", java_opts)
+    builder = builder.config("spark.executor.extraJavaOptions", java_opts)
+    
     return builder.getOrCreate()
 
 
