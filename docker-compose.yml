@@ -39,6 +39,7 @@ services:
       AWS_SECRET_ACCESS_KEY: minioadmin123
       S3_ENDPOINT: http://minio:9000
       JAVA_HOME: /usr/lib/jvm/java-17-openjdk-arm64
+      GRANT_SUDO: "yes"
     command: ["sh", "-c", "chmod +x /start-spark.sh && /start-spark.sh"]
     ports:
       - "9077:7077"
@@ -53,6 +54,7 @@ services:
       - geoai-network
     depends_on:
       - minio
+    user: root
 
   # =========================================================================
   # POSTGRESQL - Metastore

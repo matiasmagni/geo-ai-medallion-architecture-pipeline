@@ -110,12 +110,15 @@ def create_spark_session(config: Config) -> SparkSession:
     conf.setAppName(config.APP_NAME)
     conf.setMaster(config.SPARK_MASTER)
     
-    # Note: Delta Lake config requires jars to be loaded - skip for now
-    # Delta will be loaded via --packages or explicit jar loading
+    # Load Delta and Sedona JARs via packages
+    conf.set("spark.jars.packages", "io.delta:delta-spark_2.12:3.1.0,org.apache.sedona:sedona-spark-3.5_2.12:1.7.0")
     
-    # Use default serializer (avoid Sedona Kryo conflict with PySpark 3.5+)
+    # Delta Lake configuration
+    conf.set("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+    conf.set("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+    
+    # Use default serializer
     conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-    # Skip Sedona Kryo registrator - use SedonaContext SQL API instead
     
     # MinIO / S3A Configuration
     conf.set("spark.hadoop.fs.s3a.endpoint", config.MINIO_ENDPOINT)
@@ -170,8 +173,13 @@ def create_spark_session(config: Config) -> SparkSession:
     # Build Session
     spark = SparkSession.builder.config(conf=conf).getOrCreate()
     
-    # Note: Sedona requires compatible jars - skip initialization, use plain GeoPandas for spatial ops
-    logger.info("Spark session created (without Sedona spatial)")
+    # Initialize Sedona after session is created
+    try:
+        from sedona.spark import SedonaContext
+        SedonaContext.create(spark)
+        logger.info("Sedona initialized successfully")
+    except Exception as e:
+        logger.warning(f"Sedona initialization failed: {e}")
          
     return spark
 
@@ -189,23 +197,33 @@ def create_geometry_from_latlon(
     drop_nulls: bool = False,
 ) -> DataFrame:
     """
-    Create geometry column from lat/lon - simplified without Sedona.
-    Stores lat/lon as separate columns instead of geometry.
+    Create geometry column from lat/lon using Sedona ST_Point.
     """
-    # Skip geometry creation if Sedona not available
-    # Just keep lat/lon columns for later spatial joins
-    logger.info(f"Stored lat/lon from {lat_col}/{lon_col} (no Sedona geometry)")
-    return df.withColumn("lat", F.col(lat_col)).withColumn("lon", F.col(lon_col))
+    # Create geometry from lat/lon using Sedona ST_Point
+    df = df.withColumn(
+        geometry_col,
+        F.expr(f"ST_Point({lon_col}, {lat_col})"),
+    )
+
+    if drop_nulls:
+        df = df.filter(F.col(geometry_col).isNotNull())
+        logger.info(f"Dropped null geometries")
+
+    logger.info(f"Created geometry column from {lat_col}/{lon_col}")
+    return df
 
 
 def parse_geojson_geometry(
     df: DataFrame, geojson_col: str = "geometry", geometry_col: str = "geometry"
 ) -> DataFrame:
     """
-    Parse GeoJSON string - simplified without Sedona.
-    Just returns DataFrame as-is.
+    Parse GeoJSON string to Sedona geometry.
     """
-    logger.info(f"Skipping GeoJSON parsing (no Sedona)")
+    try:
+        df = df.withColumn(geometry_col, F.expr(f"ST_GeomFromGeoJSON({geojson_col})"))
+        logger.info(f"Parsed GeoJSON geometry from {geojson_col}")
+    except Exception as e:
+        logger.warning(f"GeoJSON parsing failed ({e})")
     return df
 
 
@@ -237,10 +255,23 @@ def load_neighborhoods_mask(spark: SparkSession, config: Config) -> Optional[Dat
             logger.warning("Neighborhoods loaded but have 0 rows — land mask disabled")
             return None
 
-        # Skip bbox computation without Sedona ST_XMin functions
-        logger.info(
-            f"Loaded neighborhoods: {count} polygons (land mask disabled - no Sedona)"
-        )
+        # Compute bounding box to validate neighborhood coverage
+        try:
+            bbox_row = df.select(
+                F.expr("ST_XMin(geometry)").alias("min_lon"),
+                F.expr("ST_XMax(geometry)").alias("max_lon"),
+                F.expr("ST_YMin(geometry)").alias("min_lat"),
+                F.expr("ST_YMax(geometry)").alias("max_lat"),
+            ).collect()[0]
+
+            logger.info(
+                f"Loaded land mask: {count} neighborhood polygons, "
+                f"bbox ({bbox_row.min_lon:.2f},{bbox_row.min_lat:.2f}) -> "
+                f"({bbox_row.max_lon:.2f},{bbox_row.max_lat:.2f})"
+            )
+        except Exception as bbox_err:
+            logger.warning(f"Could not compute bbox: {bbox_err}")
+            
         return df
     except Exception as e:
         logger.warning(f"Could not load neighborhoods for land mask: {e}")
@@ -769,13 +800,21 @@ def transform_osm_infrastructure(
     spark: SparkSession, config: Config, neighborhoods_df: Optional[DataFrame] = None
 ) -> DataFrame:
     """
-    Transform OSM Infrastructure - simple copy without spatial ops.
+    Transform OSM Infrastructure: Add geometry + land mask filter.
     """
     logger.info("Transforming OSM Infrastructure to Silver...")
 
     df = read_bronze_table(spark, "osm_infrastructure")
 
-    # Just add metadata (no spatial filtering without Sedona)
+    # Spatial standardization
+    df = create_geometry_from_latlon(df)
+
+    # Apply land mask filter to remove water dots
+    if neighborhoods_df is not None:
+        df = filter_points_on_land(spark, df, neighborhoods_df, source_name="osm_infrastructure")
+        logger.info("Applied land mask filter to OSM Infrastructure")
+
+    # Metadata
     df = df.withColumn("silver_updated", F.current_timestamp())
     df = df.withColumn("silver_source", F.lit("osm_infrastructure"))
 

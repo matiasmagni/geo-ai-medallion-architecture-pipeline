@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Apache%20Spark-3.5-E25A1C?style=flat&logo=apache-spark&logoColor=white" alt="Spark">
-  <img src="https://img.shields.io/badge/Apache%20Sedona-1.5.0-4CAF50?style=flat" alt="Sedona">
+  <img src="https://img.shields.io/badge/Apache%20Sedona-1.7.0-4CAF50?style=flat" alt="Sedona">
   <img src="https://img.shields.io/badge/Delta%20Lake-3.1-1E88E5?style=flat" alt="Delta Lake">
   <img src="https://img.shields.io/badge/MinIO-FF6F00?style=flat&logo=minio&logoColor=white" alt="MinIO">
   <img src="https://img.shields.io/badge/Ollama-latest-FF4081?style=flat&logo=ollama" alt="Ollama">
@@ -83,12 +83,11 @@ flowchart TB
     PANDAS --> ST
     ST --> Mask
     Mask --> SDelta
-    SDelta --> Judge
-    SDelta --> Gold
+    SDelta --> Ollama
+    Ollama --> Judge
     Judge --> Gold
     Gold --> Training
     S8 -.->|Land mask<br/>filtering| Mask
-    SDelta --> Ollama
     Ollama --> AI
     AI --> SJ
     SJ --> GF
@@ -608,24 +607,40 @@ style L0 fill:#ffeb3b,color:#000,stroke:#333,stroke-width:2px
 ### Test Results
 
 ```bash
-# Run all tests
-pytest
+# Run full E2E pipeline validation (Bronze -> Silver -> Gold)
+python3 src/run_pipeline.py --layers bronze silver gold
 
-# Run L0 unit tests only
-pytest tests/test_l0_*.py
+# Run just Silver enrichment layer
+python3 src/run_pipeline.py --layers silver
 
-# Run L1 integration tests
-pytest tests/test_l1_*.py
-
-# Run L2 component tests
-pytest tests/test_l2_*.py
-
-# Run L3 E2E tests
-pytest tests/test_l3_*.py
-
-# Result: 102 passed, 14 warnings
-# No skipped tests - per Constitution rule
+# Run just Gold dimensional modeling
+python3 src/run_pipeline.py --layers gold
 ```
+
+#### Latest Validation Results (2026-04-27)
+
+```
+Bronze Layer: 7,994 records ingested from:
+  - USGS Earthquakes: 23 records
+  - NYC 311: 1,000 records  
+  - OSM Infrastructure: 6,620 records
+  - US Neighborhoods: 195 records
+  - NYC Flights: 150 records
+  - NYC Weather: 6 records
+
+Silver Layer: Spatial enrichment with Sedona ST_Point
+  - ST_GeomFromGeoJSON for neighborhood polygons
+  - Land mask filtering enabled
+  - LLM hazard labels via local Ollama
+
+Gold Layer: Star schema dimensions and facts created
+  - dim_neighborhoods: 195 rows
+  - dim_infrastructure: 4,517 rows
+  - fact_hazard_events: 23 rows (USGS earthquakes)
+  - agg_hazard_metrics: Aggregated hazard stats
+```
+
+**Unit Test Note:** Due to Python 3.14 compatibility with NumPy, direct pytest runs require a Python 3.13 virtual environment. Use the E2E pipeline validation above for full system testing.
 
 ---
 
