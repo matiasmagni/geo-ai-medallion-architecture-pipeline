@@ -58,3 +58,9 @@ Four test levels MUST pass before deployment:
 - **No direct commits to main or develop.**
 
 **Version**: 1.1.0 | **Ratified**: 2026-04-25 | **Last Amended**: 2026-04-25
+
+## IX. Debugging & Screenshots
+
+- **ALL debugging screenshots MUST be saved to:** `debugging/screenshots/` directory
+- **NEVER commit screenshots to git** - they are already in `.gitignore`
+- When taking screenshots during debugging, always use the `filename` parameter to save to `debugging/screenshots/`

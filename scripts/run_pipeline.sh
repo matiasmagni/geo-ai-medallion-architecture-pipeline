@@ -138,19 +138,21 @@ cmd_silver() {
     info "Running Silver layer ELT pipeline..."
     
     # Check if Spark is running
-    if ! docker_compose ps | grep -q spark-master; then
+    if ! docker_compose ps | grep -q spark; then
         error "Spark not running! Run: $0 init"
         exit 1
     fi
     
     # Run the Silver pipeline
-    docker_compose exec -T spark-master \
+    docker_compose exec -T spark \
         spark-submit \
-        --master spark://spark-master:7077 \
-        --deploy-mode cluster \
+        --master spark://spark:7077 \
+        --deploy-mode client \
         --conf spark.driver.memory=4g \
         --conf spark.executor.memory=4g \
-        /src/silver_spatial_transform.py "$@"
+        --packages org.apache.sedona:sedona-spark-3.5_2.12:1.5.1,org.datasyslab:geotools-wrapper:1.5.1-28.2,io.delta:delta-spark_2.12:3.1.0,org.apache.hadoop:hadoop-aws:3.3.4 \
+        --repositories https://artifacts.unidata.ucar.edu/repository/unidata-all/ \
+        /home/jovyan/src/silver_enrichment.py "$@"
     
     success "Silver pipeline complete!"
 }
@@ -162,19 +164,21 @@ cmd_gold() {
     info "Running Gold layer ELT pipeline..."
     
     # Check if services running
-    if ! docker_compose ps | grep -q spark-master; then
+    if ! docker_compose ps | grep -q spark; then
         error "Spark not running! Run: $0 init"
         exit 1
     fi
     
     # Run the Gold pipeline
-    docker_compose exec -T spark-master \
+    docker_compose exec -T spark \
         spark-submit \
-        --master spark://spark-master:7077 \
-        --deploy-mode cluster \
+        --master spark://spark:7077 \
+        --deploy-mode client \
         --conf spark.driver.memory=4g \
         --conf spark.executor.memory=4g \
-        /src/gold_dimensional_modeling.py "$@"
+        --packages org.apache.sedona:sedona-spark-3.5_2.12:1.5.1,org.datasyslab:geotools-wrapper:1.5.1-28.2,io.delta:delta-spark_2.12:3.1.0,org.apache.hadoop:hadoop-aws:3.3.4 \
+        --repositories https://artifacts.unidata.ucar.edu/repository/unidata-all/ \
+        /home/jovyan/src/gold_dimensional_modeling.py "$@"
     
     success "Gold pipeline complete!"
 }
@@ -192,7 +196,7 @@ cmd_test() {
 # =============================================================================
 cmd_test_l0() {
     info "Running L0 unit tests..."
-    python -m pytest tests/L0.py -v --tb=short || true
+    python -m pytest tests/test_l0_unit.py -v --tb=short || true
 }
 
 # =============================================================================
@@ -200,7 +204,7 @@ cmd_test_l0() {
 # =============================================================================
 cmd_test_l1() {
     info "Running L1 integration tests..."
-    python -m pytest tests/L1.py -v --tb=short || true
+    python -m pytest tests/test_l1_integration.py -v --tb=short || true
 }
 
 # =============================================================================
@@ -208,7 +212,7 @@ cmd_test_l1() {
 # =============================================================================
 cmd_test_l2() {
     info "Running L2 pipeline tests..."
-    python -m pytest tests/L2.py -v --tb=short || true
+    python -m pytest tests/test_l2_component.py -v --tb=short || true
 }
 
 # =============================================================================
@@ -216,7 +220,7 @@ cmd_test_l2() {
 # =============================================================================
 cmd_test_l3() {
     info "Running L3 E2E tests..."
-    python -m pytest tests/L3.py -v --tb=short || true
+    python -m pytest tests/test_l3_e2e.py -v --tb=short || true
 }
 
 # =============================================================================
@@ -251,6 +255,29 @@ cmd_shell() {
 }
 
 # =============================================================================
+# COMMAND: Update Heatmap Data
+# =============================================================================
+cmd_heatmap() {
+    info "Exporting Gold data to frontend GeoJSON..."
+    
+    # 1. Copy script to container
+    docker cp scripts/update_frontend_data.py geoai-spark:/home/jovyan/update_frontend_data.py
+    
+    # 2. Run export in container
+    docker exec geoai-spark spark-submit \
+        --master spark://spark:7077 \
+        --packages org.apache.sedona:sedona-spark-3.5_2.12:1.5.1,org.datasyslab:geotools-wrapper:1.5.1-28.2,io.delta:delta-spark_2.12:3.1.0,org.apache.hadoop:hadoop-aws:3.3.4 \
+        --repositories https://artifacts.unidata.ucar.edu/repository/unidata-all/ \
+        /home/jovyan/update_frontend_data.py
+    
+    # 3. Copy back to host
+    mkdir -p geo-ai-heatmap/public/data
+    docker cp geoai-spark:/home/jovyan/geo-ai-heatmap/public/data/heatmap.geojson geo-ai-heatmap/public/data/heatmap.geojson
+    
+    success "Frontend data updated! View at http://localhost:3001"
+}
+
+# =============================================================================
 # MAIN
 # =============================================================================
 usage() {
@@ -263,6 +290,7 @@ usage() {
     echo "  status       Show service status"
     echo "  silver       Run Silver pipeline"
     echo "  gold         Run Gold pipeline"
+    echo "  heatmap      Export Gold data to frontend heatmap"
     echo "  test         Run all tests"
     echo "  test-l0      Run L0 unit tests"
     echo "  test-l1      Run L1 integration tests"
@@ -276,7 +304,8 @@ usage() {
     echo "  $0 init"
     echo "  $0 silver --input-format csv"
     echo "  $0 gold --text-column description"
-    echo "  $0 logs -f spark-master"
+    echo "  $0 heatmap"
+    echo "  $0 logs -f spark"
 }
 
 # Parse command
@@ -301,6 +330,9 @@ case "$COMMAND" in
         ;;
     gold)
         cmd_gold "$@"
+        ;;
+    heatmap)
+        cmd_heatmap "$@"
         ;;
     test)
         cmd_test "$@"

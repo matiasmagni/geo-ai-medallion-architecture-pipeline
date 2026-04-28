@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 
 # Models to be used:
 # - Llama 3 for extraction (this script will call it, or a similar function)
-# - DeepSeek for judging: "deepseek-coder-r1"
+# - Llama 3.2 for judging: "llama3.2:1b"
 LLAMA3_MODEL_NAME = "llama3"
-DEEPSEEK_JUDGE_MODEL_NAME = "deepseek-coder-r1" # Ensure this model is available
+LLAMA_JUDGE_MODEL_NAME = "mistral"  # Ensure this model is available
 # IMPORTANT: Replace with the actual module path and function name if they differ.
 HAZARD_EXTRACTION_FUNC_SOURCE = "src.silver_ai_enrichment"
 HAZARD_EXTRACTION_FUNC_NAME = "extract_hazards_with_ollama" # This is the function that is traced
@@ -49,7 +49,7 @@ def mock_ollama_judge_response(content: str) -> Dict[str, Any]:
             "score": 0.9, # Example score
             "reasoning": "The extracted JSON accurately identifies 'Data Quality' and 'Infrastructure' hazards, matching the source text. Confidence is high. No significant hallucinations detected."
         }),
-        "model": DEEPSEEK_JUDGE_MODEL_NAME,
+        "model": LLAMA_JUDGE_MODEL_NAME,
         "created_at": "2023-04-26T10:05:00Z",
         "done_reason": "stop",
         "context": [67890, 09876],
@@ -60,19 +60,19 @@ def mock_ollama_judge_response(content: str) -> Dict[str, Any]:
         "eval_duration": 600,
     }
 
-# --- Custom MLflow GenAI Metric: DeepSeek Judge ---
+# --- Custom MLflow GenAI Metric: Llama 3.2 Judge ---
 # This function will be called by mlflow.evaluate for each sample.
 # It acts as the 'Judge' to score the output of the 'model' (Llama 3 extractor).
-def deepseek_json_quality_judge(
-    model, # The LLM model being evaluated (e.g., Llama 3 extractor function)
+def llama_json_quality_judge(
+    model, # The LLM model being evaluated (e.g., Llama 3 extractor)
     context: pd.DataFrame, # DataFrame containing context columns (source_text)
     predictions: pd.DataFrame, # DataFrame containing model predictions (extracted_json)
     prompt_template: str, # The judge prompt template
-    judge_model_name: str = DEEPSEEK_JUDGE_MODEL_NAME,
+    judge_model_name: str = LLAMA_JUDGE_MODEL_NAME,
     ollama_client: ollama = ollama # Pass client for potential mocking/injection
 ) -> Dict[str, Any]:
     """
-    Custom MLflow GenAI metric function that uses DeepSeek-R1 as a judge.
+    Custom MLflow GenAI metric function that uses Llama 3.2 as a judge.
     Evaluates the quality of extracted JSON against the source text.
 
     Args:
@@ -117,7 +117,7 @@ def deepseek_json_quality_judge(
                 formatted_prompt = prompt_template.replace("{{source_text}}", source_text)
                 formatted_prompt = formatted_prompt.replace("{{extracted_json}}", extracted_json_formatted)
 
-                # --- Call the Judge LLM (DeepSeek) ---
+                # --- Call the Judge LLM (Llama 3.2) ---
                 start_time_judge = time.time()
                 # response = ollama_client.chat(
                 #     model=judge_model_name,
@@ -324,7 +324,7 @@ def evaluate_silver_data_quality(spark: SparkSession):
         query=JUDGE_PROMPT_TEMPLATE,
         context_cols=["source_text_for_evaluation"], # Column from the MLflow Dataset to use as context for the judge
         human_readable_name="JSON Extraction Quality Judge",
-        metric_fn=deepseek_json_quality_judge # Our custom scoring function
+        metric_fn=llama_json_quality_judge # Our custom scoring function
     )
 
     # 5. Execute MLflow Evaluation

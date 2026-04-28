@@ -116,6 +116,13 @@ def train_gradient_boosting(X_train, X_test, y_train, y_test):
     logger.info("GradientBoostingClassifier training complete.")
     return gb_model
 
+def train_all_models(X_train, X_test, y_train, y_test):
+    """Trains RandomForest and GradientBoosting models and returns them as a dict."""
+    rf = train_random_forest(X_train, X_test, y_train, y_test)
+    gb = train_gradient_boosting(X_train, X_test, y_train, y_test)
+    return {"random_forest": rf, "gradient_boosting": gb}
+
+
 # --- Main Execution ---
 if __name__ == "__main__":
     logger.info("Starting MLflow autologging for traditional model training.")

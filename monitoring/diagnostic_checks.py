@@ -47,7 +47,7 @@ def check_ollama_availability():
                 models = models_response.json().get('models', [])
                 model_names = [m['name'] for m in models]
                 
-                required_models = ['llama3', 'deepseek-r1']
+                required_models = ['llama3', 'mistral']
                 for model in required_models:
                     if any(model in name.lower() for name in model_names):
                         print(f"✓ {model} model is available")

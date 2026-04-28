@@ -8,3 +8,6 @@
    - `tests/test_l2_component.py`
    - `tests/test_l3_e2e.py`
 3. **NO EXCEPTIONS:** Any test logic or component verification must be integrated into these existing files, maintaining the established layering (L0-L3).
+4. **ALL debugging screenshots MUST be saved to:** `debugging/screenshots/` directory
+   - **NEVER commit screenshots to git** - they are already in `.gitignore`
+   - When taking screenshots during debugging, always use the `filename` parameter to save to `debugging/screenshots/`

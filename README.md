@@ -6,7 +6,8 @@
   <img src="https://img.shields.io/badge/Delta%20Lake-3.1-1E88E5?style=flat" alt="Delta Lake">
   <img src="https://img.shields.io/badge/MinIO-FF6F00?style=flat&logo=minio&logoColor=white" alt="MinIO">
   <img src="https://img.shields.io/badge/Ollama-latest-FF4081?style=flat&logo=ollama" alt="Ollama">
-  <img src="https://img.shields.io/badge/DeepSeek-R1-latest-6A2E8A?style=flat" alt="DeepSeek-R1">
+  <img src="https://img.shields.io/badge/Llama%203.2-1b-FF6F00?style=flat" alt="Llama 3.2">
+  <img src="https://img.shields.io/badge/Mistral-7B-FF4081?style=flat" alt="Mistral">
   <img src="https://img.shields.io/badge/OpenTelemetry-latest-28a745?style=flat&logo=opentelemetry" alt="OpenTelemetry">
   <img src="https://img.shields.io/badge/MLflow-latest-0194E2?style=flat&logo=mlflow" alt="MLflow">
   <img src="https://img.shields.io/badge/Blender-latest-E58E00?style=flat&logo=blender" alt="Blender">
@@ -56,7 +57,6 @@ flowchart TB
         PANDAS[("Pandas<br/>Data Cleaning")]
         Mask[("Land Mask<br/>ST_Within Filter")]
         SDelta[("Delta Lake<br/>ACID Transactions")]
-        Judge[("DeepSeek-R1<br/>LLM-as-a-Judge")]
     end
     
     subgraph Gold["<b>🥇 Gold Layer:</b> Star Schema + AI + MLflow"]
@@ -65,6 +65,7 @@ flowchart TB
         SJ[("Sedona Spatial Joins<br/>ST_Within, ST_Distance")]
         GF[("Gold Delta Tables<br/>Fact + Dimensions")]
         ML[("MLflow<br/>Tracking & Registry")]
+        Judge[("Mistral 7B<br/>LLM-as-a-Judge")]
     end
     
     subgraph Training["🚀 ML Training"]
@@ -84,14 +85,12 @@ flowchart TB
     ST --> Mask
     Mask --> SDelta
     SDelta --> Ollama
-    Ollama --> Judge
-    Judge --> Gold
-    Gold --> Training
-    S8 -.->|Land mask<br/>filtering| Mask
     Ollama --> AI
     AI --> SJ
     SJ --> GF
     GF -.->|Model Tracking| ML
+    GF --> Judge
+    Judge --> Training
     GF --> WA
     GF --> B3D
     T --> GF
@@ -399,6 +398,7 @@ npm start
 | **Database** | PostgreSQL | 15 | Hive Metastore + MLflow DB |
 | **MLOps** | MLflow | 2.10.0 | Experiment tracking |
 | **LLM** | Ollama | Latest | Local LLM inference |
+| **LLM Judge** | Ollama + Mistral 7B | Latest | LLM-as-a-Judge quality audit |
 | **Viz** | Blender | Latest | 3D Simulation Rendering |
 | **Maps** | Leaflet.js 1.9 + CARTO | Latest | Web mapping |
 | **Frontend** | React 18 + Next.js | 14 | Web app |
@@ -436,7 +436,7 @@ docker compose up -d
 # 5. Run ingestion (Bronze) - all 8 data sources
 python src/bronze_ingestion.py
 
-# 6. Run Silver transforms (pandas + Sedora)
+# 6. Run Silver transforms (Pandas + Sedona)
 spark-submit src/silver_pandas_transform.py
 spark-submit src/silver_sedona_transform.py
 
@@ -510,20 +510,48 @@ spark-submit src/silver_sedona_transform.py
 #### Step 3: LLM-as-a-Judge Quality Audit
 **File:** `src/silver_quality_audit.py`
 
-Implements "LLM-as-a-Judge" pattern using DeepSeek-R1 to audit Llama 3 extractions:
+Implements **"LLM-as-a-Judge"** pattern using a dual-model architecture for robust quality assurance:
 
-- Samples 5% of Silver Delta Table for auditing
-- Calls local Ollama API with `deepseek-r1` model
-- Evaluates if Llama 3's JSON extraction is logically sound and hallucination-free
-- Returns strict JSON: `{"is_accurate": boolean, "error_reason": "string"}`
-- Logs Accuracy Rate to local MLflow under experiment "DeepSeek_Silver_Audit"
-- Saves failed extractions to Quarantine Delta Table
+- **Extraction Model**: `llama3.2:1b` (1B params) — Extracts structured data (severity, hazard_type, flight_risk)
+- **Judge Model**: `mistral` (7B params) — Evaluates extraction quality, detects hallucinations
+- Different model families ensure judge is independent and unbiased
+- Judge model is larger (7B) than extraction model (1B) for better reasoning
+
+Evaluation flow:
+1. Llama 3.2 extracts structured JSON from Silver data
+2. Mistral 7B scores the extraction (1-5 scale) with rationale
+3. Failed extractions (score < 3) quarantine to Delta Table
+4. Accuracy metrics logged to MLflow
 
 ```bash
+# Run quality audit (uses Ollama via Docker or local depending on execution environment)
 spark-submit src/silver_quality_audit.py
+
+# Or run evaluation directly from Mac with local Ollama
+./venv/bin/python test_judge.py
 ```
 
 Quarantine output: `s3a://geo-lakehouse/silver/quarantine_hallucinations`
+
+> **Judge Configuration Note:** MLflow evaluation requires Ollama accessible at runtime. Due to MLflow issue [#35191](https://github.com/mlflow/mlflow/issues/35191), run evaluations from the Mac using `./venv/bin/python` (local Ollama) or from Docker containers using `mistral_judge_hdi` (Docker Ollama at `ollama:11434`).
+
+**Evaluation Dataset:** The GeoAI evaluation dataset (`geo_ai_eval_dataset`, ID: `d-40de363b99924a4ba0fe4e0bafe5d69e`) is registered to all 4 experiments with 15 test records covering geospatial hazard analysis queries. View at: `http://localhost:5001/#/experiments/3/datasets`
+
+**Prompts:** 5 evaluation prompts are registered:
+- `geoai_judge_prompt` - LLM-as-a-Judge evaluation (Mistral)
+- `geoai_extraction_prompt` - Structured data extraction (Llama 3.2)
+- `geoai_hazard_classification_prompt` - Hazard event classification
+- `geoai_flight_risk_prompt` - Aviation flight risk assessment
+- `geoai_quality_check_prompt` - Hallucination/quality verification
+
+View at: `http://localhost:5001/#/prompts`
+
+**Scripts:**
+- `test_judge.py` - Quick test with 3 evaluation samples
+- `evaluate_from_dataset.py` - Run evaluation using the registered dataset
+- `create_eval_dataset.py` - Create/update the evaluation dataset
+- `create_prompts.py` - Create evaluation prompts
+- `register_judge.py` - Register judges to all experiments
 
 ### 3. Gold Layer (Star Schema + AI Enrichment)
 
@@ -712,6 +740,8 @@ kubectl apply -f k8s/
 | MLflow not tracking | Check `MLFLOW_TRACKING_URI` |
 | OSM API 406 error | Add `User-Agent: curl/8.7.1` header |
 | Java 25 incompatible | Use `openjdk@17` for Spark |
+| LLM-as-a-Judge fails | Run from Mac venv (`./venv/bin/python`) or Docker container |
+| MLflow evaluate connection refused | Use correct Ollama URL for execution environment |
 
 ### Service Health Checks
 
@@ -721,6 +751,12 @@ curl -s http://localhost:9900/minio/health/live
 
 # MLflow
 curl -s http://localhost:5001/health
+
+# Ollama (local on Mac)
+curl -s http://localhost:11434/api/tags
+
+# Ollama (Docker)
+docker compose exec ollama curl -s http://localhost:11434/api/tags
 
 # Grafana
 curl -s http://localhost:3001/api/health
@@ -751,7 +787,7 @@ curl -s http://localhost:9080
 | Service | Endpoint |
 |--------|----------|
 | Spark Master | spark://localhost:7077 |
-| Spark UI | http://localhost:9090 |
+| Spark UI | http://localhost:9080 |
 | MinIO Console | http://localhost:9900 |
 | MLflow | http://localhost:5001 |
 | Grafana | http://localhost:3001 |

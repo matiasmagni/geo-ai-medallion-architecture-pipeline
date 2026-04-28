@@ -54,7 +54,7 @@ class Config:
     MINIO_BUCKET_SILVER: str = os.getenv("SILVER_BUCKET", "geoai-silver")
 
     # Spark Configuration
-    SPARK_MASTER: str = os.getenv("SPARK_MASTER_URL", "spark://spark-master:7077")
+    SPARK_MASTER: str = os.getenv("SPARK_MASTER_URL", "spark://spark:7077")
     APP_NAME: str = "GeoAI_Silver_Transform"
 
     # Delta Lake Configuration
@@ -72,7 +72,7 @@ class Config:
 
     # Logging
     CHECKPOINT_DIR: str = os.getenv(
-        "CHECKPOINT_DIR", "s3://geoai-checkpoints/silver-checkpoints"
+        "CHECKPOINT_DIR", "s3a://geoai-checkpoints/silver-checkpoints"
     )
 
 
@@ -97,20 +97,20 @@ def create_spark_session(config: Config) -> "SparkSession":
         Configured SparkSession
     """
     from pyspark.sql import SparkSession
-    from pyspark import SparkConf
+    from sedona.spark import SedonaContext
 
-    logger.info("Initializing Spark session with Sedona and Delta Lake...")
+    logger.info("Initializing Spark session with SedonaContext (Sedona 1.5.1+ style)...")
 
     # Build Spark configuration
-    conf = SparkConf()
-    conf.setAppName(config.APP_NAME)
-    conf.setMaster(config.SPARK_MASTER)
+    config_builder = SedonaContext.builder() \
+        .appName(config.APP_NAME) \
+        .master(config.SPARK_MASTER)
 
     # =========================================================================
     # DELTA LAKE CONFIGURATION
     # =========================================================================
-    conf.set("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-    conf.set(
+    config_builder.config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+    config_builder.config(
         "spark.sql.catalog.spark_catalog",
         "org.apache.spark.sql.delta.catalog.DeltaCatalog",
     )
@@ -118,57 +118,42 @@ def create_spark_session(config: Config) -> "SparkSession":
     # =========================================================================
     # APACHE SEDONA CONFIGURATION
     # =========================================================================
-    conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-    conf.set(
-        "spark.kryo.registrator", "org.apache.sedona.viz.core.SedonaVizKryoRegistrator"
-    )
-
-    # Enable Sedona SQL functions
-    conf.set(
-        "spark.sql.functions.sedona", "org.apache.sedona.sql.functions.SedonaFunctions"
+    config_builder.config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+    config_builder.config(
+        "spark.kryo.registrator", "org.apache.sedona.core.serde.SedonaKryoRegistrator"
     )
 
     # =========================================================================
     # MINIO/S3 CONFIGURATION
     # =========================================================================
-    conf.set("spark.hadoop.fs.s3a.endpoint", f"http://{config.MINIO_ENDPOINT}")
-    conf.set("spark.hadoop.fs.s3a.access.key", config.MINIO_ACCESS_KEY)
-    conf.set("spark.hadoop.fs.s3a.secret.key", config.MINIO_SECRET_KEY)
-    conf.set("spark.hadoop.fs.s3a.path.style.access", "true")
-    conf.set("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-    conf.set(
+    config_builder.config("spark.hadoop.fs.s3a.endpoint", f"http://{config.MINIO_ENDPOINT}")
+    config_builder.config("spark.hadoop.fs.s3a.access.key", config.MINIO_ACCESS_KEY)
+    config_builder.config("spark.hadoop.fs.s3a.secret.key", config.MINIO_SECRET_KEY)
+    config_builder.config("spark.hadoop.fs.s3a.path.style.access", "true")
+    config_builder.config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+    config_builder.config(
         "spark.hadoop.compression.codecs", "org.apache.hadoop.io.compress.GzipCodec"
     )
 
     # =========================================================================
     # SPARK CONFIGURATION
     # =========================================================================
-    conf.set("spark.driver.memory", "4g")
-    conf.set("spark.executor.memory", "4g")
-    conf.set("spark.executor.cores", "2")
-    conf.set("spark.sql.shuffle.partitions", "8")
-    conf.set("spark.sql.adaptive.enabled", "true")
-    conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
+    config_builder.config("spark.driver.memory", "4g")
+    config_builder.config("spark.executor.memory", "4g")
+    config_builder.config("spark.executor.cores", "2")
+    config_builder.config("spark.sql.shuffle.partitions", "8")
+    config_builder.config("spark.sql.adaptive.enabled", "true")
+    config_builder.config("spark.sql.adaptive.coalescePartitions.enabled", "true")
 
-    # Enable Delta Lake auto optimize
-    conf.set("spark.delta.optimize.enabled", "true")
-    conf.set("spark.delta.autoCompact.enabled", "true")
-
-    # Create SparkSession with Sedona and Delta
-    spark = (
-        SparkSession.builder.config(conf=conf)
-        .config(
-            "spark.plugins",
-            "org.apache.sedona.SedonaPlugin,io.delta.spark.DeltaSparkSessionPlugin",
-        )
-        .getOrCreate()
-    )
+    # Create SparkSession via SedonaContext
+    spark = config_builder.getOrCreate()
+    spark = SedonaContext.create(spark)
 
     # Register Sedona SQL functions
     spark.sparkContext.setLogLevel("WARN")
 
-    logger.info(f"Spark session initialized: {spark.version}")
-    logger.info(f"Spark UI: {spark.sparkContext.uiWebUrl.get()}")
+    logger.info(f"Spark session initialized via SedonaContext: {spark.version}")
+    logger.info(f"Spark UI: {spark.sparkContext.uiWebUrl}")
 
     return spark
 
@@ -203,7 +188,7 @@ def read_bronze_data(
     """
     # Determine input path
     if input_path is None:
-        input_path = f"s3://{config.MINIO_BUCKET_BRONZE}/raw/{input_format}"
+        input_path = f"s3a://{config.MINIO_BUCKET_BRONZE}/raw/{input_format}"
 
     logger.info(f"Reading Bronze data from: {input_path}")
 
@@ -344,7 +329,7 @@ def write_silver_data(df: "DataFrame", config: Config, mode: str = "overwrite") 
         config: Configuration
         mode: Write mode ("overwrite", "append")
     """
-    output_path = f"s3://{config.MINIO_BUCKET_SILVER}/{config.DELTA_TABLE_NAME}"
+    output_path = f"s3a://{config.MINIO_BUCKET_SILVER}/{config.DELTA_TABLE_NAME}"
 
     logger.info(f"Writing Silver Delta Table to: {output_path}")
 

@@ -380,7 +380,7 @@ class TestGoldDimensionalModeling:
             Row(incident_id="A1", incident_description="Crash", latitude=40.7, longitude=-73.9, geometry="POINT...", ai_severity=3.5, ai_hazard_type="accident", start_time=datetime.now(), address="Main St", city="NYC", state="NY"),
         ]
         eq_data = [
-            Row(event_id="E1", description="Quake", latitude=34.0, longitude=-118.0, geometry="POINT...", ai_severity=4.2, ai_hazard_type="earthquake", time=datetime.now(), place="LA"),
+            Row(earthquake_id="E1", description="Quake", latitude=34.0, longitude=-118.0, geometry="POINT...", ai_severity=4.2, ai_hazard_type="earthquake", time=datetime.now(), place="LA"),
         ]
         
         acc_df = self.spark.createDataFrame(acc_data)

@@ -11,7 +11,7 @@ def setup_mlflow_prompts():
     """
     Set up MLflow prompts for:
     1. Llama 3 Hazard Extraction
-    2. DeepSeek-R1 Hallucination Judge
+    2. Mistral Hallucination Judge
     """
     # Set MLflow tracking URI
     mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
@@ -37,7 +37,7 @@ Incident Narrative:
 
 Extracted Hazards (JSON array):"""
 
-    # Prompt 2: DeepSeek-R1 Hallucination Judge
+    # Prompt 2: Llama 3.2 Hallucination Judge
     hallucination_judge_prompt = """You are an expert evaluator tasked with detecting hallucinations in AI-generated hazard extractions.
 Compare the extracted hazards JSON against the original incident narrative.
 Evaluate whether the extracted hazards are:
@@ -76,12 +76,12 @@ Evaluation (JSON object):"""
         
         # Register Hallucination Judge Prompt
         judge_prompt = mlflow.register_prompt(
-            name="deepseek_hallucination_judge",
+            name="mistral_hallucination_judge",
             template=hallucination_judge_prompt,
-            commit_message="Initial version of DeepSeek-R1 hallucination judge prompt",
+            commit_message="Initial version of Mistral hallucination judge prompt",
             tags={
                 "agent_type": "judge",
-                "model": "deepseek-r1",
+                "model": "mistral",
                 "task": "hallucination_judgment",
                 "layer": "silver"
             }

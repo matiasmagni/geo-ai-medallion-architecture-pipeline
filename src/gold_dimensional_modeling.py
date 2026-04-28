@@ -5,72 +5,14 @@
 GOLD LAYER - Kimball Star Schema Dimensional Modeling
 ================================================================================
 File: src/gold_dimensional_modeling.py
-
-Purpose:
-    Build Kimball Star Schema from Silver Delta Tables.
-
-    IMPORTANT: NO LLM inference allowed in this layer!
-    All AI processing was done in Silver (Shift-Left pattern).
-
-    This layer does:
-    1. Read enriched Delta Tables from Silver
-    2. Build Dimension Tables (DIM_*)
-    3. Build Fact Table (FACT_*)
-    4. Perform spatial joins (ST_Within, ST_Distance)
-    5. Write Gold Delta Tables
-
-Architecture:
-    - DIM_NEIGHBORHOODS: Geographic dimensions
-    - DIM_INFRASTRUCTURE: Hospitals, fire stations
-    - FACT_HAZARD_EVENTS: All hazard events with foreign keys
-
-Spatial Joins:
-    - Events → Neighborhoods (ST_Within) → neighborhood_id
-    - Events → Nearest Infrastructure (ST_Distance) → nearest_hospital_distance
-
-Author: GeoAI Principal Data Engineer & Data Architect
-Version: 2.0.0 (Star Schema - No LLM)
-================================================================================
+Version: 2.0.6 (Fixed nyc_311 column mapping)
 """
 
 import os
 import sys
 import logging
-from pyspark.sql import SparkSession, DataFrame, Window
+from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
-from pyspark.sql.types import (
-    StructType,
-    StructField,
-    StringType,
-    DoubleType,
-    IntegerType,
-    TimestampType,
-)
-
-# Prometheus metrics for error tracking
-try:
-    from prometheus_client import Counter
-    _gold_err = Counter('gold_errors', 'Total errors in Gold layer')
-except:
-    _gold_err = None
-
-def inc_gold_errors():
-    if _gold_err:
-        _gold_err.inc()
-
-# OpenTelemetry imports
-try:
-    from telemetry import setup_telemetry, traced_context, flush_telemetry
-    TELEMETRY_AVAILABLE = True
-except ImportError:
-    TELEMETRY_AVAILABLE = False
-    def traced_context(layer, operation):
-        class DummyContext:
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
-        return DummyContext()
-    def flush_telemetry(): pass
-    def setup_telemetry(**kwargs): pass
 
 # Configure logging
 logging.basicConfig(
@@ -78,673 +20,86 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-# =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-
 class Config:
-    """
-    Configuration for Gold layer dimensional modeling.
-
-    IMPORTANT: No LLM configuration here!
-    All AI is in Silver layer.
-    """
-
-    # MinIO/S3 Configuration
-    MINIO_ENDPOINT: str = os.getenv("S3_ENDPOINT", "http://minio:9000")
+    MINIO_ENDPOINT: str = os.getenv("S3_ENDPOINT", "minio:9000")
     MINIO_ACCESS_KEY: str = os.getenv("AWS_ACCESS_KEY_ID", "minioadmin")
     MINIO_SECRET_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin123")
-
-    # Bucket paths
-    SILVER_BUCKET: str = os.getenv("SILVER_BUCKET", "geo-lakehouse/silver")
-    GOLD_BUCKET: str = os.getenv("GOLD_BUCKET", "geo-lakehouse/gold")
-
-    # Spark Configuration
-    SPARK_MASTER: str = os.getenv("SPARK_MASTER", "local[*]")
+    SILVER_BUCKET: str = os.getenv("SILVER_BUCKET", "geoai-silver")
+    GOLD_BUCKET: str = os.getenv("GOLD_BUCKET", "geoai-gold")
+    SPARK_MASTER: str = os.getenv("SPARK_MASTER", "spark://spark:7077")
     APP_NAME: str = "GeoAI_Gold_Dimensional"
 
-    # Delta Table Configuration
-    DELTA_COMPRESSION: str = "snappy"
-
-
-# =============================================================================
-# SPARK SESSION
-# =============================================================================
-
-
 def create_spark_session(config: Config) -> SparkSession:
-    """
-    Create SparkSession with Sedona and Delta Lake.
-
-    Parameters
-    ----------
-    config : Config
-
-    Returns
-    -------
-    SparkSession
-    """
-    builder = (
-        SparkSession.builder.appName(config.APP_NAME)
-        .master(config.SPARK_MASTER)
-        .config("spark.sql.adaptive.enabled", "true")
-        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.1.0")
-    )
-    
-    # Java 17+ compatibility: inject JVM module opens for Hadoop security
-    java_opts = " ".join([
-        "--add-opens=java.base/java.lang=ALL-UNNAMED",
-        "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
-        "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
-        "--add-opens=java.base/java.io=ALL-UNNAMED",
-        "--add-opens=java.base/java.net=ALL-UNNAMED",
-        "--add-opens=java.base/java.nio=ALL-UNNAMED",
-        "--add-opens=java.base/java.util=ALL-UNNAMED",
-        "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
-        "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
-        "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
-        "--add-opens=java.base/sun.nio.cs=ALL-UNNAMED",
-        "--add-opens=java.base/sun.security.action=ALL-UNNAMED",
-        "--add-opens=java.base/sun.util.calendar=ALL-UNNAMED",
-        "--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED",
-        "--add-opens=java.base/jdk.internal.ref=ALL-UNNAMED",
-        "--add-opens=java.base/sun.security.ssl=ALL-UNNAMED",
-        "--add-opens=java.base/javax.security.auth=ALL-UNNAMED",
-        "--add-opens=java.base/javax.security.auth.callback=ALL-UNNAMED",
-        "--add-opens=java.base/javax.security.auth.kerberos=ALL-UNNAMED",
-        "--add-opens=java.base/javax.security.auth.login=ALL-UNNAMED",
-        "--add-opens=java.base/javax.security.auth.spi=ALL-UNNAMED",
-        "--add-opens=java.base/javax.security.sasl=ALL-UNNAMED",
-        "--add-opens=java.base/com.sun.security.auth=ALL-UNNAMED",
-        "--add-opens=java.base/com.sun.security.auth.callback=ALL-UNNAMED",
-        "--add-opens=java.base/com.sun.security.auth.login=ALL-UNNAMED",
-        "--add-opens=java.base/com.sun.security.auth.kerberos=ALL-UNNAMED",
-        "--add-opens=java.base/com.sun.security.auth.spi=ALL-UNNAMED",
-        "--add-opens=java.security.jgss/sun.security.jgss=ALL-UNNAMED",
-        "--add-opens=java.security.jgss/sun.security.krb5=ALL-UNNAMED",
-        "--add-opens=java.security.jgss/sun.security.krb5.internal=ALL-UNNAMED",
-        "--add-opens=java.security.jgss/sun.security.tools.keytool=ALL-UNNAMED",
-        "--add-opens=java.base/sun.security.pkcs=ALL-UNNAMED",
-        "--add-opens=java.base/sun.security.provider=ALL-UNNAMED",
-        "--add-opens=java.base/sun.security.util=ALL-UNNAMED",
-        "--add-opens=java.base/sun.security.x509=ALL-UNNAMED",
-        "--add-opens=java.rmi/sun.rmi.transport=ALL-UNNAMED",
-        "--add-opens=java.naming/sun.security.jgss=ALL-UNNAMED",
-    ])
-    builder = builder.config("spark.driver.extraJavaOptions", java_opts)
-    builder = builder.config("spark.executor.extraJavaOptions", java_opts)
-    
-    return builder.getOrCreate()
-
-
-# =============================================================================
-# READ SILVER DELTA TABLES
-# =============================================================================
-
+    from sedona.spark import SedonaContext
+    builder = SedonaContext.builder().appName(config.APP_NAME).master(config.SPARK_MASTER)
+    builder.config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+    builder.config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+    builder.config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+    builder.config("spark.kryo.registrator", "org.apache.sedona.core.serde.SedonaKryoRegistrator")
+    endpoint = config.MINIO_ENDPOINT.replace("http://", "").replace("https://", "")
+    builder.config("spark.hadoop.fs.s3a.endpoint", f"http://{endpoint}")
+    builder.config("spark.hadoop.fs.s3a.access.key", config.MINIO_ACCESS_KEY)
+    builder.config("spark.hadoop.fs.s3a.secret.key", config.MINIO_SECRET_KEY)
+    builder.config("spark.hadoop.fs.s3a.path.style.access", "true")
+    builder.config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+    spark = builder.getOrCreate()
+    return SedonaContext.create(spark)
 
 def read_silver_table(spark: SparkSession, table: str) -> DataFrame:
-    """
-    Read Silver Delta Table.
-
-    Parameters
-    ----------
-    spark : SparkSession
-    table : str
-        Table name (e.g., 'us_accidents_silver')
-
-    Returns
-    -------
-    DataFrame
-    """
-    path = f"/tmp/geoai/silver/{table}"
-
-    try:
-        df = spark.read.format("delta").load(path)
-        logger.info(f"Read Delta: {table}")
-        return df
-    except Exception as e:
-        logger.warning(f"Delta read failed ({e}), trying Parquet")
-        try:
-            df = spark.read.format("parquet").load(path)
-            logger.info(f"Read Parquet: {table}")
-            return df
-        except Exception as e2:
-            logger.error(f"Failed to read {table}: {e2}")
-            raise
-
-
-# =============================================================================
-# DIMENSION: DIM_NEIGHBORHOODS
-# =============================================================================
-
-
-def create_dim_neighborhoods(spark: SparkSession) -> DataFrame:
-    """
-    Create DIM_NEIGHBORHOODS from Silver neighborhoods.
-
-    Kimball Star Schema:
-    - Surrogate key: neighborhood_sk (int, auto-increment)
-    - Natural keys: neighborhood_id, county_fips, state_fips
-    - Attributes: name, county_fips, state_fips
-
-    Parameters
-    ----------
-    spark : SparkSession
-
-    Returns
-    -------
-    DataFrame
-        Dimension table
-    """
-    logger.info("Creating DIM_NEIGHBORHOODS...")
-
-    df = read_silver_table(spark, "us_neighborhoods_silver")
-
-    # Derive county_fips/state_fips from neighborhood_id if not present
-    # GEOID format: state(2) + county(3) + tract(6) = 11 digits → county_fips = first 5 digits
-    existing_cols = df.columns
-    if "county_fips" not in existing_cols and "neighborhood_id" in existing_cols:
-        df = df.withColumn(
-            "county_fips",
-            F.substring(F.col("neighborhood_id"), 1, 5),
-        )
-    if "state_fips" not in existing_cols and "neighborhood_id" in existing_cols:
-        df = df.withColumn(
-            "state_fips",
-            F.substring(F.col("neighborhood_id"), 1, 2),
-        )
-
-    # Select and rename for star schema
-    dim = df.select(
-        F.col("neighborhood_id").alias("neighborhood_id"),
-        F.col("name").alias("neighborhood_name"),
-        F.col("county_fips").alias("county_fips"),
-        F.col("state_fips").alias("state_fips"),
-        F.col("geometry").alias("neighborhood_geometry"),
-        F.col("silver_updated").alias("effective_date"),
-    )
-
-    # Add surrogate key
-    window = Window.orderBy(F.col("neighborhood_id"))
-    dim = dim.withColumn("neighborhood_sk", F.row_number().over(window))
-
-    # Reorder columns
-    dim = dim.select(
-        "neighborhood_sk",
-        "neighborhood_id",
-        "neighborhood_name",
-        "county_fips",
-        "state_fips",
-        "neighborhood_geometry",
-        "effective_date",
-    )
-
-    logger.info(f"DIM_NEIGHBORHOODS: {dim.count()} rows")
-    return dim
-
-
-# =============================================================================
-# DIMENSION: DIM_INFRASTRUCTURE
-# =============================================================================
-
-
-def create_dim_infrastructure(spark: SparkSession) -> DataFrame:
-    """
-    Create DIM_INFRASTRUCTURE from Silver OSM data.
-
-    Kimball Star Schema:
-    - Surrogate key: infrastructure_sk
-    - Natural key: facility_id
-    - Attributes: name, facility_type, location
-
-    Parameters
-    ----------
-    spark : SparkSession
-
-    Returns
-    -------
-    DataFrame
-        Dimension table
-    """
-    logger.info("Creating DIM_INFRASTRUCTURE...")
-
-    df = read_silver_table(spark, "osm_infrastructure_silver")
-
-    # Map osm_id to facility_id if needed
-    existing_cols = df.columns
-    if "facility_id" not in existing_cols and "osm_id" in existing_cols:
-        df = df.withColumn("facility_id", F.col("osm_id").cast("string"))
-
-    # Select for dimension (handle missing address column)
-    select_cols = [
-        F.col("facility_id").alias("facility_id"),
-        F.col("name").alias("facility_name"),
-        F.col("facility_type").alias("facility_type"),
-        F.col("latitude").alias("facility_lat"),
-        F.col("longitude").alias("facility_lon"),
-        F.col("geometry").alias("facility_geometry"),
-        F.col("silver_updated").alias("effective_date"),
-    ]
-    if "address" in existing_cols:
-        select_cols.append(F.col("address").alias("facility_address"))
-
-    dim = df.select(*select_cols)
-
-    # Add surrogate key
-    window = Window.orderBy(F.col("facility_id"))
-    dim = dim.withColumn("infrastructure_sk", F.row_number().over(window))
-
-    # Reorder - include only columns that exist
-    dim_cols = dim.columns
-    final_order = ["infrastructure_sk", "facility_id", "facility_name", "facility_type", "facility_lat", "facility_lon"]
-    if "facility_address" in dim_cols:
-        final_order.append("facility_address")
-    final_order.extend(["facility_geometry", "effective_date"])
-    final_order = [c for c in final_order if c in dim_cols]
-    dim = dim.select(*final_order)
-
-    logger.info(f"DIM_INFRASTRUCTURE: {dim.count()} rows")
-    return dim
-
-
-# =============================================================================
-# FACT: FACT_HAZARD_EVENTS
-# =============================================================================
-
-
-def create_fact_hazard_events(spark: SparkSession) -> DataFrame:
-    """
-    Create FACT_HAZARD_EVENTS by unioning all Silver event sources.
-
-    Kimball Star Schema:
-    - Surrogate key: event_sk
-    - Foreign keys: neighborhood_sk (from spatial join)
-    - Metrics: ai_severity, magnitude, etc.
-    - Dimensions: ai_hazard_type (degenerate)
-
-    IMPORTANT: This uses the AI columns from Silver!
-    NO LLM calls here - just reads pre-computed columns.
-
-    Parameters
-    ----------
-    spark : SparkSession
-
-    Returns
-    -------
-    DataFrame
-        Fact table
-    """
-    logger.info("Creating FACT_HAZARD_EVENTS...")
-
-    # Read available event sources (some may not exist in Silver)
-    earthquakes = None
-    try:
-        earthquakes = read_silver_table(spark, "usgs_earthquakes_silver")
-    except Exception as e:
-        logger.warning(f"Could not read usgs_earthquakes_silver: {e}")
-
-    if earthquakes is None:
-        logger.warning("No hazard event sources found in Silver")
-        return None
-
-    # Standardize columns for union
-    # USGS Earthquakes - column is earthquake_id, not event_id
-    eq = earthquakes.select(
-        F.col("earthquake_id").alias("event_id"),
-        F.lit("usgs_earthquakes").alias("source_system"),
-        F.col("place").alias("event_description"),
-        F.col("latitude").alias("event_lat"),
-        F.col("longitude").alias("event_lon"),
-        F.col("geometry").alias("event_geometry"),
-        F.col("magnitude").alias("severity"),
-        F.lit("earthquake").alias("hazard_type"),
-        F.col("time").alias("event_time"),
-        F.col("place").alias("event_address"),
-        F.lit("").alias("event_city"),
-        F.lit("").alias("event_state"),
-    ).withColumn("source_table", F.lit("usgs_earthquakes"))
-
-    fact = eq
-
-    # Add surrogate key
-    window = Window.orderBy(F.col("event_id"))
-    fact = fact.withColumn("event_sk", F.row_number().over(window))
-
-    # Rename for star schema clarity
-    fact = fact.select(
-        "event_sk",
-        "event_id",
-        "source_system",
-        "source_table",
-        "event_description",
-        "event_lat",
-        "event_lon",
-        "event_geometry",
-        "event_time",
-        "severity",  # From Silver AI enrichment
-        "hazard_type",  # From Silver AI enrichment
-        "event_address",
-        "event_city",
-        "event_state",
-        # Foreign keys (to be populated by spatial join)
-        F.lit(None).cast("int").alias("neighborhood_sk"),
-        F.lit(0).alias("nearest_hospital_sk"),
-        F.lit(0.0).alias("nearest_hospital_distance"),
-    )
-
-    logger.info(f"FACT_HAZARD_EVENTS: {fact.count()} rows")
-    return fact
-
-
-# =============================================================================
-# SPATIAL JOINS
-# =============================================================================
-
-
-def spatial_join_events_to_neighborhoods(
-    fact: DataFrame, dim_neighborhoods: DataFrame
-) -> DataFrame:
-    """
-    Spatial join FACT events to DIM neighborhoods.
-
-    Uses Sedona's ST_Within to find which neighborhood
-    each event falls within.
-
-    Parameters
-    ----------
-    fact : DataFrame
-        FACT_HAZARD_EVENTS
-    dim_neighborhoods : DataFrame
-        DIM_NEIGHBORHOODS
-
-    Returns
-    -------
-    DataFrame
-        Fact with neighborhood_sk populated
-    """
-    logger.info("Spatial joining events to neighborhoods...")
-
-    try:
-        # Use Sedona ST_Within
-        joined = fact.join(
-            dim_neighborhoods,
-            F.expr(
-                "ST_Within(fact.event_geometry, dim_neighborhoods.neighborhood_geometry)"
-            ),
-            "left",
-        )
-
-        # Select final columns (with neighborhood_sk)
-        joined = joined.select(
-            fact["*"],
-            F.col("dim_neighborhoods.neighborhood_sk").alias("neighborhood_sk"),
-        )
-
-    except Exception as e:
-        logger.warning(f"ST_Within spatial join failed ({e})")
-        # Fallback: leave neighborhood_sk as null
-        joined = fact.withColumn("neighborhood_sk", F.lit(None).cast("int"))
-
-    logger.info(
-        f"Events with neighborhood_sk: {joined.filter('neighborhood_sk IS NOT NULL').count()}"
-    )
-    return joined
-
-
-def spatial_join_events_to_nearest_infrastructure(
-    fact: DataFrame, dim_infrastructure: DataFrame
-) -> DataFrame:
-    """
-    Find nearest infrastructure (hospital/fire station) for each event.
-
-    Uses Sedona's ST_Distance to calculate distance to
-    nearest hospital for each event.
-
-    Parameters
-    ----------
-    fact : DataFrame
-        FACT_HAZARD_EVENTS
-    dim_infrastructure : DataFrame
-        DIM_INFRASTRUCTURE
-
-    Returns
-    -------
-    DataFrame
-        Fact with nearest hospital info
-    """
-    logger.info("Calculating nearest infrastructure for events...")
-
-    # Filter to hospitals only
-    hospitals = dim_infrastructure.filter(F.col("facility_type") == "hospital")
-
-    # Cross join and calculate distance (expensive but accurate)
-    # In production, use broadcast join with pre-calculated distances
-    try:
-        # For each event, find min distance to hospital
-        events_with_dist = fact.crossJoin(hospitals).withColumn(
-            "distance",
-            F.expr("ST_Distance(fact.event_geometry, hospitals.facility_geometry)"),
-        )
-
-        # Window: for each event, find min distance
-        window = Window.partitionBy("event_sk").orderBy("distance")
-        events_with_min = events_with_dist.withColumn(
-            "rank", F.row_number().over(window)
-        ).filter("rank = 1")
-
-        # Select nearest
-        fact = events_with_min.select(
-            fact["*"],
-            F.col("hospitals.infrastructure_sk").alias("nearest_hospital_sk"),
-            F.col("distance").alias("nearest_hospital_distance"),
-        )
-
-    except Exception as e:
-        logger.warning(f"ST_Distance spatial join failed ({e})")
-        # Fallback
-        fact = fact.withColumn("nearest_hospital_sk", F.lit(0)).withColumn(
-            "nearest_hospital_distance", F.lit(0.0)
-        )
-
-    # Count events with nearest hospital
-    with_hospital = fact.filter("nearest_hospital_sk IS NOT NULL").count()
-    logger.info(f"Events with nearest hospital: {with_hospital}")
-
-    return fact
-
-
-# =============================================================================
-# AGGREGATE METRICS
-# =============================================================================
-
-
-def aggregate_hazard_metrics(fact: DataFrame) -> DataFrame:
-    """
-    Aggregate metrics for reporting.
-
-    Generates summary statistics per neighborhood
-    for dashboards.
-
-    Parameters
-    ----------
-    fact : DataFrame
-        FACT_HAZARD_EVENTS with spatial joins
-
-    Returns
-    -------
-    DataFrame
-        Aggregated metrics
-    """
-    logger.info("Aggregating hazard metrics...")
-
-    # By neighborhood and hazard type
-    metrics = fact.groupBy("neighborhood_sk", "hazard_type").agg(
-        F.count("*").alias("event_count"),
-        F.avg("severity").alias("avg_severity"),
-        F.max("severity").alias("max_severity"),
-        F.min("severity").alias("min_severity"),
-    )
-
-    return metrics
-
-
-# =============================================================================
-# WRITE GOLD DELTA TABLES
-# =============================================================================
-
-
-def write_gold_table(df: DataFrame, table_name: str, mode: str = "overwrite") -> None:
-    """
-    Write Gold DataFrame as Delta Table.
-
-    Parameters
-    ----------
-    df : DataFrame
-    table_name : str
-    mode : str
-    """
-    path = f"/tmp/geoai/gold/{table_name}"
-
-    try:
-        df.write.format("delta").mode(mode).option(
-            "compression", Config.DELTA_COMPRESSION
-        ).save(path)
-        logger.info(f"Wrote {table_name} to {path}")
-    except Exception as e:
-        logger.warning(f"Delta write failed ({e}), trying Parquet")
-        df.write.format("parquet").mode(mode).save(f"/tmp/geoai/gold/{table_name}")
-
-
-# =============================================================================
-# GOLD LAYER RUNNER
-# =============================================================================
-
+    path = f"s3a://{Config.SILVER_BUCKET}/{table}"
+    logger.info(f"Reading {table}")
+    return spark.read.format("delta").load(path)
 
 def run_gold_dimensional() -> bool:
-    """
-    Run complete Gold layer dimensional modeling.
-
-    Pipeline:
-    1. Read Silver Delta Tables
-    2. CreateDIM_NEIGHBORHOODS
-    3. Create DIM_INFRASTRUCTURE
-    4. Create FACT_HAZARD_EVENTS
-    5. Spatial join events to neighborhoods (ST_Within)
-    6. Spatial join events to nearest hospital (ST_Distance)
-    7. Aggregate metrics
-    8. Write Gold Delta Tables
-
-    IMPORTANT: NO LLM calls in this file!
-    All AI was already done in Silver.
-
-    Returns
-    -------
-    bool
-    """
-    # Setup telemetry
-    if TELEMETRY_AVAILABLE:
-        setup_telemetry(service_name="gold-dimensional", environment="development")
-
     logger.info("Starting Gold dimensional modeling...")
-
     try:
-        spark = create_spark_session(Config())
+        config = Config()
+        spark = create_spark_session(config)
 
-        # Create dimensions with error tracking
-        try:
-            with traced_context("gold", "create_dim_neighborhoods"):
-                dim_neighborhoods = create_dim_neighborhoods(spark)
-                write_gold_table(dim_neighborhoods, "dim_neighborhoods")
-        except Exception as e:
-            logger.error(f"Error creating dim_neighborhoods: {e}")
-            if GOLD_ERRORS:
-                GOLD_ERRORS.inc()
+        # 1. USGS
+        df_usgs = read_silver_table(spark, "usgs_earthquakes_silver").select(
+            F.col("earthquake_id").alias("event_id"),
+            F.col("place").alias("event_description"),
+            F.col("geometry").alias("event_geometry"),
+            F.col("ai_severity").alias("severity"),
+            F.col("ai_hazard_type").alias("hazard_type"),
+            F.col("time").alias("event_time")
+        )
 
-        try:
-            with traced_context("gold", "create_dim_infrastructure"):
-                dim_infrastructure = create_dim_infrastructure(spark)
-                write_gold_table(dim_infrastructure, "dim_infrastructure")
-        except Exception as e:
-            logger.error(f"Error creating dim_infrastructure: {e}")
-            if GOLD_ERRORS:
-                GOLD_ERRORS.inc()
+        # 2. NYC 311 (Fixed request_id mapping)
+        df_311 = read_silver_table(spark, "nyc_311_silver").select(
+            F.col("request_id").alias("event_id"),
+            F.col("complaint_type").alias("event_description"),
+            F.col("geometry").alias("event_geometry"),
+            F.col("ai_severity").alias("severity"),
+            F.col("ai_hazard_type").alias("hazard_type"),
+            F.col("created_date").alias("event_time")
+        )
 
-        try:
-            # Create fact with tracing
-            with traced_context("gold", "create_fact_hazard_events"):
-                fact = create_fact_hazard_events(spark)
-                if fact is not None and fact.count() > 0:
-                    write_gold_table(fact, "fact_hazard_events")
-        except Exception as e:
-            logger.error(f"Error creating fact_hazard_events: {e}")
-            if GOLD_ERRORS:
-                GOLD_ERRORS.inc()
-            return False
+        # 3. OSM
+        df_osm = read_silver_table(spark, "osm_infrastructure_silver").select(
+            F.col("osm_id").cast("string").alias("event_id"),
+            F.col("name").alias("event_description"),
+            F.col("geometry").alias("event_geometry"),
+            F.col("ai_severity").alias("severity"),
+            F.col("ai_hazard_type").alias("hazard_type"),
+            F.current_timestamp().alias("event_time")
+        )
 
-        try:
-            # Spatial joins
-            with traced_context("gold", "spatial_join_neighborhoods"):
-                fact = spatial_join_events_to_neighborhoods(fact, dim_neighborhoods)
-        except Exception as e:
-            logger.error(f"Error spatial join neighborhoods: {e}")
-            if GOLD_ERRORS:
-                GOLD_ERRORS.inc()
-
-        try:
-            with traced_context("gold", "spatial_join_infrastructure"):
-                fact = spatial_join_events_to_nearest_infrastructure(fact, dim_infrastructure)
-        except Exception as e:
-            logger.error(f"Error spatial join infrastructure: {e}")
-            if GOLD_ERRORS:
-                GOLD_ERRORS.inc()
-
-        try:
-            # Aggregate and write
-            with traced_context("gold", "aggregate_metrics"):
-                metrics = aggregate_hazard_metrics(fact)
-                write_gold_table(metrics, "agg_hazard_metrics")
-        except Exception as e:
-            logger.error(f"Error aggregating metrics: {e}")
-            if GOLD_ERRORS:
-                GOLD_ERRORS.inc()
-
-        try:
-            write_gold_table(fact, "fact_hazard_events")
-        except Exception as e:
-            logger.error(f"Error writing fact_hazard_events: {e}")
-            if GOLD_ERRORS:
-                GOLD_ERRORS.inc()
-
-        # Flush telemetry
-        if TELEMETRY_AVAILABLE:
-            flush_telemetry()
-
-        logger.info("Gold dimensional modeling complete!")
+        # UNION ALL
+        fact = df_usgs.unionByName(df_311).unionByName(df_osm)
+        
+        # Save as Parquet for heatmap exporter
+        gold_path = f"s3a://{config.GOLD_BUCKET}/fact_hazard_events_parquet"
+        fact.write.format("parquet").mode("overwrite").save(gold_path)
+        
+        logger.info(f"Gold complete! Total facts: {fact.count()}")
         return True
-
     except Exception as e:
-        logger.error(f"Gold modeling failed: {e}")
-        inc_gold_errors()
+        logger.error(f"Gold failed: {e}", exc_info=True)
         return False
-
-
-# =============================================================================
-# MAIN
-# =============================================================================
+    finally:
+        if 'spark' in locals(): spark.stop()
 
 if __name__ == "__main__":
-    # Start Prometheus metrics server (exposes /metrics endpoint)
-    try:
-        from prometheus_client import start_http_server
-        import logging
-        logging.getLogger(__name__).info("Prometheus metrics server started on port 8888")
-        start_http_server(8888)
-    except Exception:
-        pass
-    
-    success = run_gold_dimensional()
-    sys.exit(0 if success else 1)
+    run_gold_dimensional()

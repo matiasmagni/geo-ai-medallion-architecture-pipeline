@@ -16,6 +16,7 @@ PALETTE = {
     "FIRE": (1.0, 0.0, 0.0, 1.0),      # RED
     "HOSPITAL": (1.0, 0.0, 1.0, 1.0),  # MAGENTA
     "AMBULANCE": (0.0, 0.5, 1.0, 1.0), # BLUE
+    "RESCUE": (1.0, 0.5, 0.0, 1.0),    # ORANGE
     "TEXT": (1.0, 1.0, 1.0, 1.0)       # WHITE
 }
 
@@ -46,7 +47,8 @@ def create_sky_legend():
         ("--- GEOAI NYC HEATMAP LEGEND ---", PALETTE["TEXT"]),
         ("RED SPHERES: Fire Risk Predicted > 50%", PALETTE["FIRE"]),
         ("MAGENTA SPHERES: Hospital (Size = Bed Demand)", PALETTE["HOSPITAL"]),
-        ("BLUE SPHERES: Ambulance Dispatch (Color = Response Time)", PALETTE["AMBULANCE"])
+        ("BLUE SPHERES: Ambulance Dispatch / Road", PALETTE["AMBULANCE"]),
+        ("ORANGE SPHERES: Rescue / Emergency Infrastructure", PALETTE["RESCUE"])
     ]
     
     base_z = 500
@@ -83,7 +85,9 @@ def create_sky_legend():
 # 3. HEATMAP (SPHERES ONLY)
 # =============================================================================
 def generate_heatmap():
-    if not os.path.exists(PARQUET_PATH): return
+    if not os.path.exists(PARQUET_PATH): 
+        print(f"WARNING: {PARQUET_PATH} not found. Skipping heatmap generation.")
+        return
     df = pd.read_parquet(PARQUET_PATH)
     
     print(f"Generating heatmap for {len(df)} points...")
@@ -94,14 +98,35 @@ def generate_heatmap():
         target_color = (1,1,1,1)
         radius = 8
         
-        if row['facility_type'] == 'building':
-            if row.get('fire_risk_prob', 0) < 0.5: continue
+        f_type = str(row.get('facility_type', '')).lower()
+        
+        if f_type in ['building', 'fire', 'fire_station']:
+            # Fire risk markers
+            risk = row.get('fire_risk_prob', row.get('severity', 0))
+            # If it's a probability, check > 0.5. If it's severity (1-10), check > 5.
+            if risk < 0.5 and risk > 1: # If it's 0-1 range
+                if risk < 0.5: continue
+            elif risk <= 5 and risk > 0: # If it's 1-10 range
+                if risk <= 5: continue
+                
             target_color = PALETTE["FIRE"]
-        elif row['facility_type'] == 'hospital':
+            radius = 12 # Make fire risk more prominent
+            
+        elif f_type in ['hospital', 'clinic', 'medical']:
             target_color = PALETTE["HOSPITAL"]
             radius = row.get('bed_demand', 10) # Size driven by demand
-        elif row['facility_type'] == 'road':
+            
+        elif f_type in ['road', 'ambulance', 'traffic']:
             target_color = PALETTE["AMBULANCE"]
+            radius = 6
+            
+        elif f_type in ['rescue', 'police', 'emergency', 'safety']:
+            target_color = PALETTE["RESCUE"]
+            radius = 10
+        else:
+            # Generic point
+            target_color = (0.5, 0.5, 0.5, 1.0)
+            radius = 4
         
         bpy.ops.mesh.primitive_ico_sphere_add(radius=radius, subdivisions=2, location=loc)
         sphere = bpy.context.active_object

@@ -23,6 +23,11 @@ from typing import Dict, Any, Optional
 import requests
 import pandas as pd
 
+if sys.platform == "darwin":
+    jdk17 = "/opt/homebrew/opt/openjdk@17"
+    if Path(jdk17).exists() and os.getenv("JAVA_HOME", "").endswith("/openjdk"):
+        os.environ["JAVA_HOME"] = jdk17
+        print(f"conftest: Overriding JAVA_HOME to {jdk17}", flush=True)
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -124,19 +129,40 @@ def spark_session_l1():
     try:
         from pyspark.sql import SparkSession
         from pyspark import SparkConf
-        
+
         conf = SparkConf()
         conf.setAppName("L1IntegrationTests")
-        conf.setMaster(os.getenv("SPARK_MASTER", "local[*]"))
-        
-        # MinIO Configuration for Spark
-        conf.set("spark.hadoop.fs.s3a.endpoint", os.getenv("S3_ENDPOINT", "http://localhost:9000"))
-        conf.set("spark.hadoop.fs.s3a.access.key", os.getenv("AWS_ACCESS_KEY_ID", "minioadmin"))
-        conf.set("spark.hadoop.fs.s3a.secret.key", os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin123"))
-        conf.set("spark.hadoop.fs.s3a.path.style.access", "true")
-        conf.set("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        
+        _master = os.getenv("SPARK_MASTER", "")
+        if not _master:
+            _master = "spark://localhost:9077" if sys.platform == "darwin" else "local[*]"
+        conf.setMaster(_master)
+        conf.set("spark.sql.warehouse.dir", "file:///tmp/spark-warehouse-l1")
+        conf.set("spark.hadoop.fs.file.impl", "org.apache.hadoop.fs.LocalFileSystem")
+        conf.set("spark.hadoop.fs.hdfs.impl", "org.apache.hadoop.hdfs.DistributedFileSystem")
+        conf.set("spark.sql.shuffle.partitions", "4")
+        # Add Sedona JARs if they exist
+        import os as _os
+        _sedona_jars_dir = "/tmp/sedona_jars"
+        if _os.path.isdir(_sedona_jars_dir):
+            jar_files = sorted([
+                p for p in _os.listdir(_sedona_jars_dir)
+                if p.endswith(".jar") and _os.path.getsize(_os.path.join(_sedona_jars_dir, p)) > 10000
+            ])
+            if jar_files:
+                _jar_paths = ",".join(
+                    _os.path.join(_sedona_jars_dir, j) for j in jar_files
+                )
+                conf.set("spark.jars", _jar_paths)
+                logger.info(f"Added Sedona JARs: {jar_files}")
+
         spark = SparkSession.builder.config(conf=conf).getOrCreate()
+        # Register Sedona geometry functions if available
+        try:
+            from sedona.register.geo_registrator import SedonaRegistrator
+            SedonaRegistrator().registerAll(spark)
+            logger.info("Sedona functions registered")
+        except Exception as exc:
+            logger.warning(f"Sedona registration failed: {exc}")
         yield spark
         spark.stop()
     except Exception as e:

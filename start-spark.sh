@@ -25,7 +25,7 @@ chmod 755 "${LOG_DIR}" 2>/dev/null || true
 
 # Install Python packages (non-interactive)
 echo "Installing Python packages..."
-pip install --no-cache-dir pyspark==3.5.0 boto3 delta-spark requests -q 2>/dev/null || true
+pip install --no-cache-dir pyspark==3.5.0 boto3 delta-spark apache-sedona==1.5.1 requests -q 2>/dev/null || true
 
 # Start Spark Master
 echo "Starting Spark Master..."
