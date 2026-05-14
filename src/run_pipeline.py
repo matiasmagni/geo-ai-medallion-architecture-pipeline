@@ -60,8 +60,8 @@ def main():
     os.chdir(project_root)
 
     # Environment setup
-    os.environ["OLLAMA_BASE_URL"] = "http://localhost:11434"
-    os.environ["OLLAMA_MODEL"] = "llama3.2:1b"
+    os.environ.setdefault("OLLAMA_BASE_URL", "http://localhost:11434")
+    os.environ.setdefault("OLLAMA_MODEL", "llama3.2:1b")
 
     # Step 1: Bronze Layer (raw data)
     print("\n" + "=" * 60)

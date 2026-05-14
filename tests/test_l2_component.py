@@ -33,22 +33,23 @@ class TestMinIOComponent:
 
     def test_minio_connection(self, minio_client_l2):
         """Test MinIO connection."""
-        # List buckets - returns a list directly in newer minio
+        if minio_client_l2 is None:
+            pytest.skip("MinIO not available - ensure Docker services are running")
         buckets = minio_client_l2.list_buckets()
         assert isinstance(buckets, list)
 
     def test_minio_bucket_creation(self, minio_client_l2):
         """Test MinIO bucket creation."""
+        if minio_client_l2 is None:
+            pytest.skip("MinIO not available - ensure Docker services are running")
         import uuid
         bucket_name = f"test-bucket-{uuid.uuid4().hex[:8]}"
         
         minio_client_l2.make_bucket(bucket_name)
         
-        # Verify bucket exists  
         buckets = minio_client_l2.list_buckets()
         bucket_names = [b.name for b in buckets]
         
-        # Cleanup
         minio_client_l2.remove_bucket(bucket_name)
         
         assert bucket_name in bucket_names
@@ -67,10 +68,8 @@ class TestMLflowComponent:
             pytest.skip("MLflow not available - ensure Docker services are running")
         
         import mlflow
-        
-        # Try to get experiment
         exp = mlflow.get_experiment_by_name("Default")
-        assert exp is not None or True  # May not exist yet
+        assert exp is not None or True
 
     def test_mlflow_create_experiment(self, mlflow_client_l2):
         """Test creating MLflow experiment."""
@@ -106,8 +105,9 @@ class TestPrometheusComponent:
     def test_prometheus_metrics_endpoint(self):
         """Test Prometheus metrics endpoint."""
         import requests
-        
-        response = requests.get("http://localhost:9090/-/healthy", timeout=5)
+
+        prometheus_url = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
+        response = requests.get(f"{prometheus_url}/-/healthy", timeout=5)
         assert response.status_code in [200, 404]
 
 
@@ -131,18 +131,20 @@ class TestDockerServices:
         """Test MinIO health endpoint."""
         if not docker_services.get("minio"):
             pytest.skip("MinIO not running - ensure Docker services are running")
-        
+
         import requests
-        response = requests.get("http://localhost:9000/minio/health/live", timeout=5)
+        minio_url = os.getenv("MINIO_URL", "http://localhost:9000")
+        response = requests.get(f"{minio_url}/minio/health/live", timeout=5)
         assert response.status_code in [200, 403]
 
     def test_mlflow_health(self, docker_services):
         """Test MLflow health endpoint."""
         if not docker_services.get("mlflow"):
             pytest.skip("MLflow not running - ensure Docker services are running")
-        
+
         import requests
-        response = requests.get("http://localhost:5001/health", timeout=5)
+        mlflow_url = os.getenv("MLFLOW_URL", "http://localhost:5000")
+        response = requests.get(f"{mlflow_url}/health", timeout=5)
         assert response.status_code in [200, 404]
 
 

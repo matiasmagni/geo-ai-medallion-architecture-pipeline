@@ -59,9 +59,6 @@ ENV/
 # Ruff linter
 .ruff_cache/
 
-# Specify (generated)
-.specify/
-
 # Notebooks checkpoint
 .ipynb_checkpoints/
 
@@ -111,6 +108,7 @@ Thumbs.db
 # -----------------------------------------------------------------------------
 .pytest_cache/
 .coverage
+coverage.xml
 htmlcov/
 *.cover
 .tox/

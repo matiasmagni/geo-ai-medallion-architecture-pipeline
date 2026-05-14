@@ -36,6 +36,9 @@ class Config:
     SILVER_BUCKET: str = os.getenv("SILVER_BUCKET", "geoai-silver")
     SPARK_MASTER: str = os.getenv("SPARK_MASTER", "spark://spark:7077")
     APP_NAME: str = "GeoAI_Silver_Enrichment"
+    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "llama3.2:latest")
+    OLLAMA_TIMEOUT: int = int(os.getenv("OLLAMA_TIMEOUT", "30"))
 
 
 # =============================================================================
@@ -119,6 +122,51 @@ def transform_osm_infrastructure(spark: SparkSession, config: Config) -> DataFra
 def transform_us_neighborhoods(spark: SparkSession, config: Config) -> DataFrame:
     df = read_bronze_table(spark, "us_neighborhoods")
     df = df.withColumn("geometry", F.expr("ST_GeomFromGeoJSON(geometry)"))
+    df = df.withColumn("geometry", F.expr("ST_SetSRID(geometry, 4326)"))
+    return df
+
+
+def transform_us_accidents(spark: SparkSession, config: Config) -> DataFrame:
+    df = read_bronze_table(spark, "us_accidents")
+    df = create_geometry_from_latlon(df, "latitude", "longitude")
+    df = df.withColumn("ai_severity", F.col("severity"))
+    df = df.withColumn("ai_hazard_type", F.lit("traffic"))
+    return df
+
+
+def parse_ai_enrichment(json_str: str) -> dict:
+    try:
+        data = json.loads(json_str)
+        severity = data.get("severity", 5)
+        if isinstance(severity, str):
+            severity_map = {"low": 1, "medium": 5, "high": 8, "critical": 10}
+            severity = severity_map.get(severity.lower(), 5)
+        return {
+            "ai_severity": max(1, min(10, int(severity))),
+            "ai_hazard_type": data.get("hazard_type", "unknown")
+        }
+    except (json.JSONDecodeError, TypeError):
+        return {"ai_severity": 5, "ai_hazard_type": "unknown"}
+
+
+def create_ollama_enrichment_udf(config: Config):
+    from pyspark.sql.types import StringType
+    def enrich_text(text: str) -> str:
+        try:
+            import requests
+            resp = requests.post(
+                f"{config.OLLAMA_BASE_URL}/api/generate",
+                json={"model": config.OLLAMA_MODEL, "prompt": text, "stream": False},
+                timeout=config.OLLAMA_TIMEOUT
+            )
+            return resp.json().get("response", "")
+        except Exception:
+            return ""
+    return F.udf(enrich_text, StringType())
+
+
+def parse_geojson_geometry(df: DataFrame, geojson_col: str = "geometry") -> DataFrame:
+    df = df.withColumn("geometry", F.expr(f"ST_GeomFromGeoJSON({geojson_col})"))
     df = df.withColumn("geometry", F.expr("ST_SetSRID(geometry, 4326)"))
     return df
 

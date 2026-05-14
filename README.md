@@ -154,6 +154,7 @@ graph TD
 | **MLflow** | 5001 | mlflow/mlflow | (no auth) | Experiment tracking |
 | **Prometheus** | 9090 | prom/prometheus | (no auth) | Metrics |
 | **Spark Master** | 7077 | bitnami/spark:3.5 | (no auth) | Distributed compute |
+| **SonarQube** | 9005 | sonarqube:10.4 | (no auth) | Static Code Analysis |
 
 ### Quick Start
 
@@ -163,6 +164,9 @@ docker compose up -d
 
 # Verify services
 docker compose ps
+
+# Run Static Analysis (after SonarQube is up)
+docker compose run --rm sonar-scanner
 
 # View logs
 docker compose logs -f spark
@@ -181,6 +185,9 @@ curl -s http://localhost:9090/-/healthy
 # Grafana Dashboards (admin / admin123)
 http://localhost:3000/d/geoai-data-quality/geoai-data-quality
 http://localhost:3000/d/geoai-pipeline/geoai-pipeline-performance
+
+# SonarQube (admin / admin)
+http://localhost:9005
 
 # MinIO Console (minioadmin / minioadmin123)
 http://localhost:9001

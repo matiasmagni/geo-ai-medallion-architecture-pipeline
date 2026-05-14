@@ -40,11 +40,11 @@ class Config:
     MINIO_SECRET_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin123")
     BRONZE_BUCKET: str = os.getenv("BRONZE_BUCKET", "geoai-bronze")
     
-    USGS_API_URL: str = "https://earthquake.usgs.gov/fdsnws/event/1/query"
-    OSM_API_URL: str = "https://overpass-api.de/api/interpreter"
-    NYC311_API_URL: str = "https://data.cityofnewyork.us/resource/fhrw-4uyv.json"
-    OPENSKY_API_URL: str = "https://opensky-network.org/api/states"
-    NWS_API_URL: str = "https://api.weather.gov"
+    USGS_API_URL: str = os.getenv("USGS_API_URL", "https://earthquake.usgs.gov/fdsnws/event/1/query")
+    OSM_API_URL: str = os.getenv("OSM_API_URL", "https://overpass-api.de/api/interpreter")
+    NYC311_API_URL: str = os.getenv("NYC311_API_URL", "https://data.cityofnewyork.us/resource/fhrw-4uyv.json")
+    OPENSKY_API_URL: str = os.getenv("OPENSKY_API_URL", "https://opensky-network.org/api/states")
+    NWS_API_URL: str = os.getenv("NWS_API_URL", "https://api.weather.gov")
     
     NYC_AIRPORTS: list = ["KJFK", "KLGA", "KEWR", "KTEB", "KISP"]
     NYC_LAT_MIN: float = 40.5
